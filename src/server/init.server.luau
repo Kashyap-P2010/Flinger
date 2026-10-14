@@ -161,4 +161,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v02 lerp smoothed.")
+print("[Server] v03 grab beam server active.")
