@@ -1,5 +1,5 @@
 -- init.client.luau
--- beam visual & simple crosshair
+-- flick detection & throw mechanics
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("RunService")
@@ -13,20 +13,44 @@ local remotesFolder = ReplicatedStorage:WaitForChild("GameRemotes", 10)
 local rGrabStart = remotesFolder:WaitForChild("GrabStart") :: RemoteEvent
 local rGrabMove = remotesFolder:WaitForChild("GrabMove") :: RemoteEvent
 local rGrabRelease = remotesFolder:WaitForChild("GrabRelease") :: RemoteEvent
+local rGrabThrow = remotesFolder:WaitForChild("GrabThrow") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
 local GRAB_MIN_DIST = 3
 local GRAB_MAX_HOLD_DIST = 40
 local GRAB_DEFAULT_DIST = 15
 local SCROLL_SENSITIVITY = 1.2
+local THROW_FLICK_THRESHOLD = 6
+local THROW_FLICK_SAMPLES = 5
+local THROW_FORCE = 140
 
 local grabbed: BasePart? = nil
 local grabDist = GRAB_DEFAULT_DIST
 
--- hide standard cursor
+-- mouse flick buffer to track throw speed
+local lastMousePos = Vector2.new(0, 0)
+local mouseSpeedBuf: {number} = {}
+
+local function recordMouse()
+	local pos = UIS:GetMouseLocation()
+	local spd = (pos - lastMousePos).Magnitude
+	lastMousePos = pos
+	table.insert(mouseSpeedBuf, spd)
+	if #mouseSpeedBuf > THROW_FLICK_SAMPLES then
+		table.remove(mouseSpeedBuf, 1)
+	end
+end
+
+local function avgMouseSpeed(): number
+	if #mouseSpeedBuf == 0 then return 0 end
+	local s = 0
+	for _, v in ipairs(mouseSpeedBuf) do s = s + v end
+	return s / #mouseSpeedBuf
+end
+
 UIS.MouseIconEnabled = false
 
--- cheap simple crosshair
+-- cheap crosshair
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "FlingUI"
 screenGui.ResetOnSpawn = false
@@ -51,7 +75,6 @@ chV.Position = UDim2.new(0.5, -1, 0, 0)
 chV.BackgroundColor3 = Color3.fromRGB(0, 255, 180)
 chV.BorderSizePixel = 0
 
--- beam visual parts
 local beamFolder: Folder? = nil
 local beamPart0: Part? = nil
 local beamPart1: Part? = nil
@@ -133,6 +156,11 @@ local function enforceFirstPerson()
 	localPlayer.CameraMaxZoomDistance = 0.5
 end
 
+local function clearGrabState()
+	grabbed = nil
+	destroyVisuals()
+end
+
 local function tryGrab()
 	if grabbed then return end
 	local char = localPlayer.Character; if not char then return end
@@ -152,21 +180,52 @@ local function tryGrab()
 
 	grabbed = hp
 	grabDist = math.clamp(result.Distance, GRAB_MIN_DIST, GRAB_MAX_HOLD_DIST)
+	mouseSpeedBuf = {}
 	createVisuals(hp)
 	rGrabStart:FireServer(hp)
 end
 
 local function releaseGrab()
 	if not grabbed then return end
-	grabbed = nil
-	destroyVisuals()
 	rGrabRelease:FireServer()
+	clearGrabState()
+end
+
+local function throwGrab()
+	if not grabbed then return end
+	local speed = math.clamp(
+		THROW_FORCE * (0.7 + avgMouseSpeed() / 20),
+		THROW_FORCE * 0.6,
+		THROW_FORCE * 2
+	)
+	rGrabThrow:FireServer(camera.CFrame.LookVector, speed)
+	clearGrabState()
 end
 
 UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 	if gp then return end
+
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if not grabbed then tryGrab() else releaseGrab() end
+		if not grabbed then tryGrab() end
+		return
+	end
+
+	-- rmb: flick throw or gentle drop
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		if grabbed then
+			if avgMouseSpeed() >= THROW_FLICK_THRESHOLD then
+				throwGrab()
+			else
+				releaseGrab()
+			end
+		end
+		return
+	end
+
+	-- mmb: quick drop
+	if input.UserInputType == Enum.UserInputType.MouseButton3 then
+		releaseGrab()
+		return
 	end
 end)
 
@@ -182,9 +241,10 @@ UIS.InputChanged:Connect(function(input: InputObject, gp: boolean)
 end)
 
 RS.RenderStepped:Connect(function()
+	recordMouse()
 	enforceFirstPerson()
 	if not grabbed or not grabbed.Parent then
-		if grabbed then releaseGrab() end
+		if grabbed then clearGrabState() end
 		return
 	end
 
@@ -194,4 +254,4 @@ RS.RenderStepped:Connect(function()
 	rGrabMove:FireServer(targetPos, targetCF)
 end)
 
-print("[Client] v03 beam & crosshair active.")
+print("[Client] v04 flick throw active.")

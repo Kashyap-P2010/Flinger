@@ -1,5 +1,5 @@
 -- init.server.luau
--- lerp smoothing & scroll dist
+-- throw physics impulse & flick
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -29,6 +29,7 @@ end
 local rGrabStart = getOrCreateRemote("GrabStart")
 local rGrabMove = getOrCreateRemote("GrabMove")
 local rGrabRelease = getOrCreateRemote("GrabRelease")
+local rGrabThrow = getOrCreateRemote("GrabThrow")
 
 local GRAB_MAX_DIST = 50
 local POSITION_P = 12000
@@ -36,10 +37,9 @@ local POSITION_D = 800
 local POSITION_MAX_FORCE = 1e5
 local GYRO_P = 6e4
 local GYRO_MAX_TORQUE = 8e4
-
--- lerp alphas for weight feel
 local POSITION_LERP_ALPHA = 0.30
 local GYRO_LERP_ALPHA = 0.28
+local THROW_FORCE = 140
 
 local grabState: {[Player]: any} = {}
 
@@ -96,7 +96,6 @@ local function cleanupGrab(state: any)
 	end
 end
 
--- lerp pos & gyro on heartbeat
 RunService.Heartbeat:Connect(function()
 	for _, state in pairs(grabState) do
 		if state.bodyPos and state.bodyPos.Parent then
@@ -153,6 +152,30 @@ rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	grabState[player] = nil
 end)
 
+-- throw impulse handler
+rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, speed: number)
+	local state = grabState[player]
+	if not state then return end
+	if typeof(direction) ~= "Vector3" then return end
+
+	local part = state.part
+	cleanupGrab(state)
+	grabState[player] = nil
+
+	if not part or not part.Parent then return end
+	speed = math.clamp(speed or THROW_FORCE, 10, THROW_FORCE * 2)
+
+	local bv = Instance.new("BodyVelocity")
+	bv.Velocity = direction.Unit * speed
+	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	bv.P = 1e4
+	bv.Parent = part
+	-- let gravity take back over after small burst
+	task.delay(0.14, function()
+		if bv and bv.Parent then bv:Destroy() end
+	end)
+end)
+
 Players.PlayerRemoving:Connect(function(player: Player)
 	local state = grabState[player]
 	if state then
@@ -161,4 +184,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v03 grab beam server active.")
+print("[Server] v04 throw impulse ready.")

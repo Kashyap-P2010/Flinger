@@ -1,8 +1,8 @@
-# AvoneTrial (v03)
+# AvoneTrial (v04)
 
-added simple beam visual and crosshair reticle.
+added rmb mouse flick throw and mmb force drop.
 
 ## changes
-- cyan beam connecting player to grabbed part
-- simple 2-bar crosshair in center
-- hidden mouse cursor
+- flick speed buffer (averages recent mouse deltas)
+- server applies bodyvelocity on throw
+- mmb drops immediately
