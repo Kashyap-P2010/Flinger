@@ -32,6 +32,7 @@ local rGrabRelease = getOrCreateRemote("GrabRelease")
 local rGrabThrow = getOrCreateRemote("GrabThrow")
 local rGrabFreeze = getOrCreateRemote("GrabFreeze")
 local rGrabColor = getOrCreateRemote("GrabColor")
+local rGrabScale = getOrCreateRemote("GrabScale")
 local rImpactVFX = getOrCreateRemote("ImpactVFX")
 
 local GRAB_MAX_DIST = 50
@@ -43,6 +44,8 @@ local GYRO_MAX_TORQUE = 8e4
 local POSITION_LERP_ALPHA = 0.30
 local GYRO_LERP_ALPHA = 0.28
 local THROW_FORCE = 140
+local SCALE_MIN = 0.15
+local SCALE_MAX = 8.0
 
 local grabState: {[Player]: any} = {}
 
@@ -137,6 +140,7 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		targetCF = rootPart.CFrame,
 		lerpedPos = rootPart.Position,
 		isLonePart = (rootPart.Parent == workspace),
+		originalSize = (rootPart.Parent == workspace) and rootPart.Size or nil,
 	}
 end)
 
@@ -257,4 +261,18 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v07 freeze & color ready.")
+-- scale lone parts or models
+rGrabScale.OnServerEvent:Connect(function(player: Player, multiplier: number)
+	local state = grabState[player]
+	if not state or typeof(multiplier) ~= "number" then return end
+	multiplier = math.clamp(multiplier, SCALE_MIN, SCALE_MAX)
+
+	if state.isLonePart and state.originalSize then
+		local part = state.part
+		if part and part.Parent then
+			part.Size = state.originalSize * multiplier
+		end
+	end
+end)
+
+print("[Server] v08 scaling active.")

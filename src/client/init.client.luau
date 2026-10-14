@@ -18,6 +18,7 @@ local rGrabRelease = remotesFolder:WaitForChild("GrabRelease") :: RemoteEvent
 local rGrabThrow = remotesFolder:WaitForChild("GrabThrow") :: RemoteEvent
 local rGrabFreeze = remotesFolder:WaitForChild("GrabFreeze") :: RemoteEvent
 local rGrabColor = remotesFolder:WaitForChild("GrabColor") :: RemoteEvent
+local rGrabScale = remotesFolder:WaitForChild("GrabScale") :: RemoteEvent
 local rImpactVFX = remotesFolder:WaitForChild("ImpactVFX") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
@@ -50,6 +51,13 @@ local rotating = false
 local frozen = false
 local frozenPos: Vector3? = nil
 local rotateCF = CFrame.identity
+local scalingUp = false
+local scalingDown = false
+local scaleMulti = 1.0
+local lastScaleSend = 0
+local SCALE_STEP = 0.03
+local SCALE_MIN = 0.15
+local SCALE_MAX = 8.0
 
 local lastMousePos = Vector2.new(0, 0)
 local mouseSpeedBuf: {number} = {}
@@ -131,6 +139,7 @@ makeHudRow("[LMB] Grab / Release")
 local rotLabel = makeHudRow("[R] Rotate Mode")
 local freezeLabel = makeHudRow("[F] Freeze Ray")
 makeHudRow("[C] Color Spray")
+local scaleLabel = makeHudRow("[Z/X] Scale")
 makeHudRow("[Scroll] Distance")
 makeHudRow("[RMB] Throw")
 
@@ -269,6 +278,9 @@ local function clearGrabState()
 	rotating = false
 	frozen = false
 	frozenPos = nil
+	scalingUp = false
+	scalingDown = false
+	scaleMulti = 1.0
 	UIS.MouseBehavior = Enum.MouseBehavior.Default
 	destroyVisuals()
 	rotLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
@@ -342,7 +354,20 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 
 	if input.KeyCode == Enum.KeyCode.R then
 		rotating = not rotating
-		if rotating then
+		if scalingUp or scalingDown then
+		local delta = scalingUp and SCALE_STEP or -SCALE_STEP
+		local newMul = math.clamp(scaleMulti + delta, SCALE_MIN, SCALE_MAX)
+		if newMul ~= scaleMulti then
+			scaleMulti = newMul
+			local now = tick()
+			if now - lastScaleSend >= 1 / 20 then
+				lastScaleSend = now
+				rGrabScale:FireServer(scaleMulti)
+			end
+		end
+	end
+
+	if rotating then
 			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
 			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
 			rotLabel.TextColor3 = Color3.fromRGB(0, 255, 180)
@@ -361,12 +386,20 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 		return
 	end
 
+	if input.KeyCode == Enum.KeyCode.Z then scalingUp = true; return end
+	if input.KeyCode == Enum.KeyCode.X then scalingDown = true; return end
+
 	if input.KeyCode == Enum.KeyCode.C then
 		colorIdx = (colorIdx % #COLOR_PALETTE) + 1
 		local col = COLOR_PALETTE[colorIdx]
 		rGrabColor:FireServer(col)
 		return
 	end
+end)
+
+UIS.InputEnded:Connect(function(input: InputObject)
+	if input.KeyCode == Enum.KeyCode.Z then scalingUp = false end
+	if input.KeyCode == Enum.KeyCode.X then scalingDown = false end
 end)
 
 UIS.InputChanged:Connect(function(input: InputObject, gp: boolean)
@@ -388,6 +421,19 @@ RS.RenderStepped:Connect(function(dt: number)
 		return
 	end
 
+	if scalingUp or scalingDown then
+		local delta = scalingUp and SCALE_STEP or -SCALE_STEP
+		local newMul = math.clamp(scaleMulti + delta, SCALE_MIN, SCALE_MAX)
+		if newMul ~= scaleMulti then
+			scaleMulti = newMul
+			local now = tick()
+			if now - lastScaleSend >= 1 / 20 then
+				lastScaleSend = now
+				rGrabScale:FireServer(scaleMulti)
+			end
+		end
+	end
+
 	if rotating then
 		local delta = UIS:GetMouseDelta()
 		local s = dt * 60
@@ -406,4 +452,4 @@ RS.RenderStepped:Connect(function(dt: number)
 	end
 end)
 
-print("[Client] v07 freeze & color active.")
+print("[Client] v08 scaling active.")

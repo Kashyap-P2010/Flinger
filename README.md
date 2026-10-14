@@ -1,8 +1,8 @@
-# AvoneTrial (v07)
+# AvoneTrial (v08)
 
-freeze ray with f key, color spray with c key, and simple hud showing keybinds.
+continuous scale up/down with z and x keys.
 
 ## changes
-- f anchors object mid-air
-- c cycles 10 colors
-- cheap bottom-left hud list
+- hold z to scale bigger
+- hold x to scale smaller
+- clamps between 0.15 and 8.0x
