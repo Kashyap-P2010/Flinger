@@ -1,8 +1,8 @@
-# AvoneTrial (v06)
+# AvoneTrial (v07)
 
-added r key to rotate held object in 3d with mouse delta.
+freeze ray with f key, color spray with c key, and simple hud showing keybinds.
 
 ## changes
-- pressing r locks position in place
-- mouse movement rotates the object on yaw and pitch
-- pressing r again resumes normal movement
+- f anchors object mid-air
+- c cycles 10 colors
+- cheap bottom-left hud list

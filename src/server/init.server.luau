@@ -1,5 +1,5 @@
 -- init.server.luau
--- throw impact detection & debris vfx
+-- freeze ray anchoring & color spray
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -30,6 +30,8 @@ local rGrabStart = getOrCreateRemote("GrabStart")
 local rGrabMove = getOrCreateRemote("GrabMove")
 local rGrabRelease = getOrCreateRemote("GrabRelease")
 local rGrabThrow = getOrCreateRemote("GrabThrow")
+local rGrabFreeze = getOrCreateRemote("GrabFreeze")
+local rGrabColor = getOrCreateRemote("GrabColor")
 local rImpactVFX = getOrCreateRemote("ImpactVFX")
 
 local GRAB_MAX_DIST = 50
@@ -134,6 +136,7 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		targetPos = rootPart.Position,
 		targetCF = rootPart.CFrame,
 		lerpedPos = rootPart.Position,
+		isLonePart = (rootPart.Parent == workspace),
 	}
 end)
 
@@ -149,6 +152,9 @@ end)
 rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	local state = grabState[player]
 	if not state then return end
+	if state.frozen and state.part and state.part.Parent then
+		state.part.Anchored = false
+	end
 	cleanupGrab(state)
 	grabState[player] = nil
 end)
@@ -159,6 +165,9 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	if typeof(direction) ~= "Vector3" then return end
 
 	local part = state.part
+	if state.frozen and part and part.Parent then
+		part.Anchored = false
+	end
 	cleanupGrab(state)
 	grabState[player] = nil
 
@@ -174,7 +183,6 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 		if bv and bv.Parent then bv:Destroy() end
 	end)
 
-	-- check impact collision on hit
 	local impactFired = false
 	local impactConn: RBXScriptConnection? = nil
 	impactConn = part.Touched:Connect(function(hit: BasePart)
@@ -197,6 +205,50 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	end)
 end)
 
+-- freeze ray mid-air toggle
+rGrabFreeze.OnServerEvent:Connect(function(player: Player, isFrozen: boolean)
+	local state = grabState[player]
+	if not state or not state.part or not state.part.Parent then return end
+
+	if isFrozen then
+		pcall(removeBodyMovers, state.part)
+		state.bodyPos = nil
+		state.bodyGyro = nil
+		state.part.Anchored = true
+		state.frozen = true
+	else
+		state.part.Anchored = false
+		local bp, bg = attachBodyMovers(state.part)
+		state.bodyPos = bp
+		state.bodyGyro = bg
+		state.lerpedPos = state.part.Position
+		state.frozen = false
+	end
+end)
+
+-- color spray
+rGrabColor.OnServerEvent:Connect(function(player: Player, color: Color3)
+	local state = grabState[player]
+	if not state or not state.part or not state.part.Parent then return end
+	if typeof(color) ~= "Color3" then return end
+
+	if state.isLonePart then
+		state.part.Color = color
+		return
+	end
+
+	local model = state.part.Parent
+	if model and model:IsA("Model") then
+		for _, obj in ipairs(model:GetDescendants()) do
+			if obj:IsA("BasePart") and not obj:IsA("UnionOperation") then
+				obj.Color = color
+			end
+		end
+	else
+		state.part.Color = color
+	end
+end)
+
 Players.PlayerRemoving:Connect(function(player: Player)
 	local state = grabState[player]
 	if state then
@@ -205,4 +257,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v06 rotation mode server ready.")
+print("[Server] v07 freeze & color ready.")

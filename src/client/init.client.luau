@@ -1,5 +1,5 @@
 -- init.client.luau
--- throw impact vfx & slate debris bits
+-- freeze ray, color spray & cheap hud
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("RunService")
@@ -16,6 +16,8 @@ local rGrabStart = remotesFolder:WaitForChild("GrabStart") :: RemoteEvent
 local rGrabMove = remotesFolder:WaitForChild("GrabMove") :: RemoteEvent
 local rGrabRelease = remotesFolder:WaitForChild("GrabRelease") :: RemoteEvent
 local rGrabThrow = remotesFolder:WaitForChild("GrabThrow") :: RemoteEvent
+local rGrabFreeze = remotesFolder:WaitForChild("GrabFreeze") :: RemoteEvent
+local rGrabColor = remotesFolder:WaitForChild("GrabColor") :: RemoteEvent
 local rImpactVFX = remotesFolder:WaitForChild("ImpactVFX") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
@@ -26,13 +28,28 @@ local SCROLL_SENSITIVITY = 1.2
 local THROW_FLICK_THRESHOLD = 6
 local THROW_FLICK_SAMPLES = 5
 local THROW_FORCE = 140
+local ROT_SENSITIVITY = 0.004
+
+local COLOR_PALETTE = {
+	Color3.fromRGB(255, 55, 55),
+	Color3.fromRGB(55, 110, 255),
+	Color3.fromRGB(55, 210, 80),
+	Color3.fromRGB(255, 215, 50),
+	Color3.fromRGB(255, 80, 200),
+	Color3.fromRGB(255, 145, 40),
+	Color3.fromRGB(150, 55, 255),
+	Color3.fromRGB(0, 255, 200),
+	Color3.fromRGB(255, 255, 255),
+	Color3.fromRGB(35, 35, 35),
+}
+local colorIdx = 1
 
 local grabbed: BasePart? = nil
 local grabDist = GRAB_DEFAULT_DIST
 local rotating = false
+local frozen = false
 local frozenPos: Vector3? = nil
 local rotateCF = CFrame.identity
-local ROT_SENSITIVITY = 0.004
 
 local lastMousePos = Vector2.new(0, 0)
 local mouseSpeedBuf: {number} = {}
@@ -70,21 +87,55 @@ crosshair.BackgroundTransparency = 1
 crosshair.Parent = screenGui
 
 local chH = Instance.new("Frame", crosshair)
-chH.Size = UDim2.new(1, 0, 0, 2)
-chH.Position = UDim2.new(0, 0, 0.5, -1)
-chH.BackgroundColor3 = Color3.fromRGB(0, 255, 180)
-chH.BorderSizePixel = 0
+chH.Size = UDim2.new(1, 0, 0, 2); chH.Position = UDim2.new(0, 0, 0.5, -1)
+chH.BackgroundColor3 = Color3.fromRGB(0, 255, 180); chH.BorderSizePixel = 0
 
 local chV = Instance.new("Frame", crosshair)
-chV.Size = UDim2.new(0, 2, 1, 0)
-chV.Position = UDim2.new(0.5, -1, 0, 0)
-chV.BackgroundColor3 = Color3.fromRGB(0, 255, 180)
-chV.BorderSizePixel = 0
+chV.Size = UDim2.new(0, 2, 1, 0); chV.Position = UDim2.new(0.5, -1, 0, 0)
+chV.BackgroundColor3 = Color3.fromRGB(0, 255, 180); chV.BorderSizePixel = 0
 
--- impact blast fx w physical slate debris pieces
+-- cheap simple hud on bottom left
+local hud = Instance.new("Frame")
+hud.Name = "ControlsHUD"
+hud.Size = UDim2.new(0, 170, 0, 0)
+hud.AutomaticSize = Enum.AutomaticSize.Y
+hud.Position = UDim2.new(0, 12, 1, -12)
+hud.AnchorPoint = Vector2.new(0, 1)
+hud.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+hud.BackgroundTransparency = 0.3
+hud.BorderSizePixel = 0
+hud.Parent = screenGui
+Instance.new("UICorner", hud).CornerRadius = UDim.new(0, 6)
+
+local pad = Instance.new("UIPadding", hud)
+pad.PaddingTop = UDim.new(0, 6); pad.PaddingBottom = UDim.new(0, 6)
+pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
+
+local list = Instance.new("UIListLayout", hud)
+list.Padding = UDim.new(0, 3)
+
+local function makeHudRow(txt: string)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, 0, 0, 16)
+	l.BackgroundTransparency = 1
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 12
+	l.TextColor3 = Color3.fromRGB(200, 200, 210)
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Text = txt
+	l.Parent = hud
+	return l
+end
+
+makeHudRow("[LMB] Grab / Release")
+local rotLabel = makeHudRow("[R] Rotate Mode")
+local freezeLabel = makeHudRow("[F] Freeze Ray")
+makeHudRow("[C] Color Spray")
+makeHudRow("[Scroll] Distance")
+makeHudRow("[RMB] Throw")
+
 local function spawnImpactVFX(pos: Vector3, speed: number)
 	local intensity = math.clamp(speed / 90, 0.4, 3.5)
-
 	local flash = Instance.new("Part")
 	flash.Name = "_ImpactFlash"
 	flash.Shape = Enum.PartType.Ball
@@ -99,28 +150,13 @@ local function spawnImpactVFX(pos: Vector3, speed: number)
 	light.Brightness = 9; light.Range = intensity * 30
 	light.Color = Color3.fromRGB(255, 175, 50); light.Parent = flash
 
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 230, 100)),
-		ColorSequenceKeypoint.new(0.35, Color3.fromRGB(255, 100, 28)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 38, 0)),
-	})
-	emitter.LightEmission = 0.9; emitter.LightInfluence = 0.1
-	emitter.Speed = NumberRange.new(intensity * 9, intensity * 28)
-	emitter.Lifetime = NumberRange.new(0.22, 0.75)
-	emitter.SpreadAngle = Vector2.new(80, 80)
-	emitter.Rate = 0; emitter.Enabled = false
-	emitter.Parent = flash
-	emitter:Emit(math.ceil(intensity * 20))
-
-	TweenService:Create(flash, TweenInfo.new(0.28, Enum.EasingStyle.Quad), {
+	TweenService:Create(flash, TweenInfo.new(0.28), {
 		Size = Vector3.new(intensity * 5, intensity * 5, intensity * 5),
 		Transparency = 1,
 	}):Play()
 	TweenService:Create(light, TweenInfo.new(0.22), {Brightness = 0}):Play()
 	Debris:AddItem(flash, 1.2)
 
-	-- fling debris bits
 	local numBits = math.floor(math.clamp(intensity * 4, 2, 12))
 	for _ = 1, numBits do
 		local bit = Instance.new("Part")
@@ -231,9 +267,12 @@ end
 local function clearGrabState()
 	grabbed = nil
 	rotating = false
+	frozen = false
 	frozenPos = nil
 	UIS.MouseBehavior = Enum.MouseBehavior.Default
 	destroyVisuals()
+	rotLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+	freezeLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
 end
 
 local function tryGrab()
@@ -255,6 +294,8 @@ local function tryGrab()
 
 	grabbed = hp
 	grabDist = math.clamp(result.Distance, GRAB_MIN_DIST, GRAB_MAX_HOLD_DIST)
+	rotateCF = hp.CFrame.Rotation
+	frozen = false; frozenPos = nil
 	mouseSpeedBuf = {}
 	createVisuals(hp)
 	rGrabStart:FireServer(hp)
@@ -262,38 +303,12 @@ end
 
 local function releaseGrab()
 	if not grabbed then return end
-
-	-- r key: toggle rotation mode
-	if input.KeyCode == Enum.KeyCode.R then
-		rotating = not rotating
-		if rotating then
-			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
-			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
-		else
-			frozenPos = nil
-			UIS.MouseBehavior = Enum.MouseBehavior.Default
-		end
-		return
-	end
 	rGrabRelease:FireServer()
 	clearGrabState()
 end
 
 local function throwGrab()
 	if not grabbed then return end
-
-	-- r key: toggle rotation mode
-	if input.KeyCode == Enum.KeyCode.R then
-		rotating = not rotating
-		if rotating then
-			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
-			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
-		else
-			frozenPos = nil
-			UIS.MouseBehavior = Enum.MouseBehavior.Default
-		end
-		return
-	end
 	local speed = math.clamp(
 		THROW_FORCE * (0.7 + avgMouseSpeed() / 20),
 		THROW_FORCE * 0.6,
@@ -313,17 +328,43 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		if grabbed then
-			if avgMouseSpeed() >= THROW_FLICK_THRESHOLD then
-				throwGrab()
-			else
-				releaseGrab()
-			end
+			if avgMouseSpeed() >= THROW_FLICK_THRESHOLD then throwGrab() else releaseGrab() end
 		end
 		return
 	end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton3 then
 		releaseGrab()
+		return
+	end
+
+	if not grabbed then return end
+
+	if input.KeyCode == Enum.KeyCode.R then
+		rotating = not rotating
+		if rotating then
+			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
+			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+			rotLabel.TextColor3 = Color3.fromRGB(0, 255, 180)
+		else
+			frozenPos = nil
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+			rotLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+		end
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		frozen = not frozen
+		rGrabFreeze:FireServer(frozen)
+		freezeLabel.TextColor3 = frozen and Color3.fromRGB(80, 180, 255) or Color3.fromRGB(200, 200, 210)
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.C then
+		colorIdx = (colorIdx % #COLOR_PALETTE) + 1
+		local col = COLOR_PALETTE[colorIdx]
+		rGrabColor:FireServer(col)
 		return
 	end
 end)
@@ -357,8 +398,12 @@ RS.RenderStepped:Connect(function(dt: number)
 
 	local targetPos = rotating and (frozenPos :: Vector3) or (camera.CFrame.Position + camera.CFrame.LookVector * grabDist)
 	local targetCF = rotating and (CFrame.new(targetPos) * rotateCF) or (CFrame.new(targetPos) * grabbed.CFrame.Rotation)
+
 	updateVisuals(grabbed)
-	rGrabMove:FireServer(targetPos, targetCF)
+
+	if not frozen then
+		rGrabMove:FireServer(targetPos, targetCF)
+	end
 end)
 
-print("[Client] v06 3d rotation ready.")
+print("[Client] v07 freeze & color active.")
