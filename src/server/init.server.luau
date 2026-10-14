@@ -205,4 +205,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v05 impact detection active.")
+print("[Server] v06 rotation mode server ready.")

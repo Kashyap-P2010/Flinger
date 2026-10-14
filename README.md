@@ -1,8 +1,8 @@
-# AvoneTrial (v05)
+# AvoneTrial (v06)
 
-impact detection on thrown part w spark particles and physical debris pieces.
+added r key to rotate held object in 3d with mouse delta.
 
 ## changes
-- touched listener on fast moving parts (>12 speed)
-- sparks & light flash
-- 2-12 small slate debris parts thrown outward
+- pressing r locks position in place
+- mouse movement rotates the object on yaw and pitch
+- pressing r again resumes normal movement

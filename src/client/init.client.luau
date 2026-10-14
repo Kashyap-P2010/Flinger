@@ -29,6 +29,10 @@ local THROW_FORCE = 140
 
 local grabbed: BasePart? = nil
 local grabDist = GRAB_DEFAULT_DIST
+local rotating = false
+local frozenPos: Vector3? = nil
+local rotateCF = CFrame.identity
+local ROT_SENSITIVITY = 0.004
 
 local lastMousePos = Vector2.new(0, 0)
 local mouseSpeedBuf: {number} = {}
@@ -226,6 +230,9 @@ end
 
 local function clearGrabState()
 	grabbed = nil
+	rotating = false
+	frozenPos = nil
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
 	destroyVisuals()
 end
 
@@ -255,12 +262,38 @@ end
 
 local function releaseGrab()
 	if not grabbed then return end
+
+	-- r key: toggle rotation mode
+	if input.KeyCode == Enum.KeyCode.R then
+		rotating = not rotating
+		if rotating then
+			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
+			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+		else
+			frozenPos = nil
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
+		return
+	end
 	rGrabRelease:FireServer()
 	clearGrabState()
 end
 
 local function throwGrab()
 	if not grabbed then return end
+
+	-- r key: toggle rotation mode
+	if input.KeyCode == Enum.KeyCode.R then
+		rotating = not rotating
+		if rotating then
+			frozenPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
+			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+		else
+			frozenPos = nil
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
+		return
+	end
 	local speed = math.clamp(
 		THROW_FORCE * (0.7 + avgMouseSpeed() / 20),
 		THROW_FORCE * 0.6,
@@ -306,7 +339,7 @@ UIS.InputChanged:Connect(function(input: InputObject, gp: boolean)
 	end
 end)
 
-RS.RenderStepped:Connect(function()
+RS.RenderStepped:Connect(function(dt: number)
 	recordMouse()
 	enforceFirstPerson()
 	if not grabbed or not grabbed.Parent then
@@ -314,10 +347,18 @@ RS.RenderStepped:Connect(function()
 		return
 	end
 
-	local targetPos = camera.CFrame.Position + camera.CFrame.LookVector * grabDist
-	local targetCF = CFrame.new(targetPos) * grabbed.CFrame.Rotation
+	if rotating then
+		local delta = UIS:GetMouseDelta()
+		local s = dt * 60
+		local yaw = -delta.X * ROT_SENSITIVITY * s
+		local pitch = -delta.Y * ROT_SENSITIVITY * s
+		rotateCF = CFrame.Angles(0, yaw, 0) * rotateCF * CFrame.Angles(pitch, 0, 0)
+	end
+
+	local targetPos = rotating and (frozenPos :: Vector3) or (camera.CFrame.Position + camera.CFrame.LookVector * grabDist)
+	local targetCF = rotating and (CFrame.new(targetPos) * rotateCF) or (CFrame.new(targetPos) * grabbed.CFrame.Rotation)
 	updateVisuals(grabbed)
 	rGrabMove:FireServer(targetPos, targetCF)
 end)
 
-print("[Client] v05 impact debris loaded.")
+print("[Client] v06 3d rotation ready.")
