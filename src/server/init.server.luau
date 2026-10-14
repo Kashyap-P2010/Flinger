@@ -1,9 +1,9 @@
 -- init.server.luau
--- basic grab physics & body mover networking
+-- lerp smoothing & scroll dist
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- setup remots folder
 local FOLDER_NAME = "GameRemotes"
 local function getRemoteFolder(): Folder
 	local folder = ReplicatedStorage:FindFirstChild(FOLDER_NAME)
@@ -30,7 +30,6 @@ local rGrabStart = getOrCreateRemote("GrabStart")
 local rGrabMove = getOrCreateRemote("GrabMove")
 local rGrabRelease = getOrCreateRemote("GrabRelease")
 
--- cfg values
 local GRAB_MAX_DIST = 50
 local POSITION_P = 12000
 local POSITION_D = 800
@@ -38,7 +37,10 @@ local POSITION_MAX_FORCE = 1e5
 local GYRO_P = 6e4
 local GYRO_MAX_TORQUE = 8e4
 
--- track active grab per player
+-- lerp alphas for weight feel
+local POSITION_LERP_ALPHA = 0.30
+local GYRO_LERP_ALPHA = 0.28
+
 local grabState: {[Player]: any} = {}
 
 local function getRootPart(hit: BasePart): BasePart?
@@ -62,7 +64,6 @@ local function getRootPart(hit: BasePart): BasePart?
 end
 
 local function attachBodyMovers(part: BasePart)
-	-- clean up old movers if any
 	local old = part:FindFirstChild("_FlingBodyPos"); if old then old:Destroy() end
 	old = part:FindFirstChild("_FlingBodyGyro"); if old then old:Destroy() end
 
@@ -95,6 +96,20 @@ local function cleanupGrab(state: any)
 	end
 end
 
+-- lerp pos & gyro on heartbeat
+RunService.Heartbeat:Connect(function()
+	for _, state in pairs(grabState) do
+		if state.bodyPos and state.bodyPos.Parent then
+			state.lerpedPos = state.lerpedPos:Lerp(state.targetPos, POSITION_LERP_ALPHA)
+			state.bodyPos.Position = state.lerpedPos
+
+			if state.bodyGyro and state.bodyGyro.Parent then
+				state.bodyGyro.CFrame = state.bodyGyro.CFrame:Lerp(state.targetCF, GYRO_LERP_ALPHA)
+			end
+		end
+	end
+end)
+
 rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 	if not hitPart or not hitPart:IsA("BasePart") then return end
 
@@ -105,10 +120,8 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 	end
 
 	local rootPart = getRootPart(hitPart)
-	-- dont grab anchord parts
 	if not rootPart or rootPart.Anchored then return end
 
-	-- basic dist check against exploitr
 	local char = player.Character; if not char then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart; if not hrp then return end
 	if (rootPart.Position - hrp.Position).Magnitude > GRAB_MAX_DIST + 5 then return end
@@ -120,6 +133,7 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		bodyGyro = bg,
 		targetPos = rootPart.Position,
 		targetCF = rootPart.CFrame,
+		lerpedPos = rootPart.Position,
 	}
 end)
 
@@ -130,13 +144,6 @@ rGrabMove.OnServerEvent:Connect(function(player: Player, targetPos: Vector3, tar
 
 	state.targetPos = targetPos
 	state.targetCF = targetCF
-
-	if state.bodyPos and state.bodyPos.Parent then
-		state.bodyPos.Position = targetPos
-	end
-	if state.bodyGyro and state.bodyGyro.Parent then
-		state.bodyGyro.CFrame = targetCF
-	end
 end)
 
 rGrabRelease.OnServerEvent:Connect(function(player: Player)
@@ -146,7 +153,6 @@ rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	grabState[player] = nil
 end)
 
--- cleanup when player leaves server
 Players.PlayerRemoving:Connect(function(player: Player)
 	local state = grabState[player]
 	if state then
@@ -155,4 +161,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v01 grab ready.")
+print("[Server] v02 lerp smoothed.")

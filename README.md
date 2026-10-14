@@ -1,7 +1,7 @@
-# AvoneTrial (v01)
+# AvoneTrial (v02)
 
-base physics grab w body movers on server.
+added lerp smoothing on heartbeat and mouse scroll to change distance.
 
-## layout
-- 1 server script: `src/server/init.server.luau`
-- 1 client script: `src/client/init.client.luau`
+## changes
+- lerp alpha 0.30 pos, 0.28 gyro
+- scroll wheel moves obj between 3 and 40 studs

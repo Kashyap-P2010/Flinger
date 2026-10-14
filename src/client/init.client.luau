@@ -1,5 +1,5 @@
 -- init.client.luau
--- basic grab client w raycast & 1st person lock
+-- lerp client w scroll dist
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("RunService")
@@ -14,12 +14,14 @@ local rGrabMove = remotesFolder:WaitForChild("GrabMove") :: RemoteEvent
 local rGrabRelease = remotesFolder:WaitForChild("GrabRelease") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
+local GRAB_MIN_DIST = 3
+local GRAB_MAX_HOLD_DIST = 40
 local GRAB_DEFAULT_DIST = 15
+local SCROLL_SENSITIVITY = 1.2
 
 local grabbed: BasePart? = nil
 local grabDist = GRAB_DEFAULT_DIST
 
--- lock camera to 1st person
 local function enforceFirstPerson()
 	camera.CameraType = Enum.CameraType.Custom
 	localPlayer.CameraMode = Enum.CameraMode.LockFirstPerson
@@ -35,7 +37,6 @@ local function tryGrab()
 	params.FilterDescendantsInstances = {char}
 	params.FilterType = Enum.RaycastFilterType.Exclude
 
-	-- cast forward from cam center
 	local result = workspace:Raycast(
 		camera.CFrame.Position,
 		camera.CFrame.LookVector * GRAB_MAX_DIST,
@@ -46,7 +47,7 @@ local function tryGrab()
 	if not hp or not hp:IsA("BasePart") or hp.Anchored then return end
 
 	grabbed = hp
-	grabDist = math.clamp(result.Distance, 3, 40)
+	grabDist = math.clamp(result.Distance, GRAB_MIN_DIST, GRAB_MAX_HOLD_DIST)
 	rGrabStart:FireServer(hp)
 end
 
@@ -63,6 +64,18 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 	end
 end)
 
+-- adjust dist w mouse wheel
+UIS.InputChanged:Connect(function(input: InputObject, gp: boolean)
+	if gp or not grabbed then return end
+	if input.UserInputType == Enum.UserInputType.MouseWheel then
+		grabDist = math.clamp(
+			grabDist + input.Position.Z * SCROLL_SENSITIVITY,
+			GRAB_MIN_DIST,
+			GRAB_MAX_HOLD_DIST
+		)
+	end
+end)
+
 RS.RenderStepped:Connect(function()
 	enforceFirstPerson()
 	if not grabbed or not grabbed.Parent then
@@ -75,4 +88,4 @@ RS.RenderStepped:Connect(function()
 	rGrabMove:FireServer(targetPos, targetCF)
 end)
 
-print("[Client] v01 grab loaded.")
+print("[Client] v02 scroll controls active.")
