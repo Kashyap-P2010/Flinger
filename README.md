@@ -1,8 +1,8 @@
-# AvoneTrial (v04)
+# AvoneTrial (v05)
 
-added rmb mouse flick throw and mmb force drop.
+impact detection on thrown part w spark particles and physical debris pieces.
 
 ## changes
-- flick speed buffer (averages recent mouse deltas)
-- server applies bodyvelocity on throw
-- mmb drops immediately
+- touched listener on fast moving parts (>12 speed)
+- sparks & light flash
+- 2-12 small slate debris parts thrown outward

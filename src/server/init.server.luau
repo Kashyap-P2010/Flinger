@@ -1,5 +1,5 @@
 -- init.server.luau
--- throw physics impulse & flick
+-- throw impact detection & debris vfx
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -30,6 +30,7 @@ local rGrabStart = getOrCreateRemote("GrabStart")
 local rGrabMove = getOrCreateRemote("GrabMove")
 local rGrabRelease = getOrCreateRemote("GrabRelease")
 local rGrabThrow = getOrCreateRemote("GrabThrow")
+local rImpactVFX = getOrCreateRemote("ImpactVFX")
 
 local GRAB_MAX_DIST = 50
 local POSITION_P = 12000
@@ -152,7 +153,6 @@ rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	grabState[player] = nil
 end)
 
--- throw impulse handler
 rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, speed: number)
 	local state = grabState[player]
 	if not state then return end
@@ -170,9 +170,30 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
 	bv.P = 1e4
 	bv.Parent = part
-	-- let gravity take back over after small burst
 	task.delay(0.14, function()
 		if bv and bv.Parent then bv:Destroy() end
+	end)
+
+	-- check impact collision on hit
+	local impactFired = false
+	local impactConn: RBXScriptConnection? = nil
+	impactConn = part.Touched:Connect(function(hit: BasePart)
+		if impactFired then return end
+		if not hit or not hit.Parent then return end
+		local throwerChar = player.Character
+		if throwerChar and hit:IsDescendantOf(throwerChar) then return end
+		if not hit:IsA("BasePart") then return end
+
+		local partVel = part.AssemblyLinearVelocity
+		if partVel.Magnitude < 12 then return end
+
+		impactFired = true
+		if impactConn then impactConn:Disconnect(); impactConn = nil end
+		rImpactVFX:FireAllClients(part.Position, partVel.Magnitude)
+	end)
+
+	task.delay(8, function()
+		if impactConn then impactConn:Disconnect(); impactConn = nil end
 	end)
 end)
 
@@ -184,4 +205,4 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v04 throw impulse ready.")
+print("[Server] v05 impact detection active.")

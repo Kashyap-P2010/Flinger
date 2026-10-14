@@ -1,9 +1,11 @@
 -- init.client.luau
--- flick detection & throw mechanics
+-- throw impact vfx & slate debris bits
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
 
 local localPlayer = Players.LocalPlayer
 local camera = workspace.CurrentCamera
@@ -14,6 +16,7 @@ local rGrabStart = remotesFolder:WaitForChild("GrabStart") :: RemoteEvent
 local rGrabMove = remotesFolder:WaitForChild("GrabMove") :: RemoteEvent
 local rGrabRelease = remotesFolder:WaitForChild("GrabRelease") :: RemoteEvent
 local rGrabThrow = remotesFolder:WaitForChild("GrabThrow") :: RemoteEvent
+local rImpactVFX = remotesFolder:WaitForChild("ImpactVFX") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
 local GRAB_MIN_DIST = 3
@@ -27,7 +30,6 @@ local THROW_FORCE = 140
 local grabbed: BasePart? = nil
 local grabDist = GRAB_DEFAULT_DIST
 
--- mouse flick buffer to track throw speed
 local lastMousePos = Vector2.new(0, 0)
 local mouseSpeedBuf: {number} = {}
 
@@ -74,6 +76,72 @@ chV.Size = UDim2.new(0, 2, 1, 0)
 chV.Position = UDim2.new(0.5, -1, 0, 0)
 chV.BackgroundColor3 = Color3.fromRGB(0, 255, 180)
 chV.BorderSizePixel = 0
+
+-- impact blast fx w physical slate debris pieces
+local function spawnImpactVFX(pos: Vector3, speed: number)
+	local intensity = math.clamp(speed / 90, 0.4, 3.5)
+
+	local flash = Instance.new("Part")
+	flash.Name = "_ImpactFlash"
+	flash.Shape = Enum.PartType.Ball
+	flash.Size = Vector3.new(0.1, 0.1, 0.1)
+	flash.Position = pos
+	flash.Anchored = true; flash.CanCollide = false
+	flash.Material = Enum.Material.Neon
+	flash.Color = Color3.fromRGB(255, 200, 80)
+	flash.Parent = workspace
+
+	local light = Instance.new("PointLight")
+	light.Brightness = 9; light.Range = intensity * 30
+	light.Color = Color3.fromRGB(255, 175, 50); light.Parent = flash
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 230, 100)),
+		ColorSequenceKeypoint.new(0.35, Color3.fromRGB(255, 100, 28)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 38, 0)),
+	})
+	emitter.LightEmission = 0.9; emitter.LightInfluence = 0.1
+	emitter.Speed = NumberRange.new(intensity * 9, intensity * 28)
+	emitter.Lifetime = NumberRange.new(0.22, 0.75)
+	emitter.SpreadAngle = Vector2.new(80, 80)
+	emitter.Rate = 0; emitter.Enabled = false
+	emitter.Parent = flash
+	emitter:Emit(math.ceil(intensity * 20))
+
+	TweenService:Create(flash, TweenInfo.new(0.28, Enum.EasingStyle.Quad), {
+		Size = Vector3.new(intensity * 5, intensity * 5, intensity * 5),
+		Transparency = 1,
+	}):Play()
+	TweenService:Create(light, TweenInfo.new(0.22), {Brightness = 0}):Play()
+	Debris:AddItem(flash, 1.2)
+
+	-- fling debris bits
+	local numBits = math.floor(math.clamp(intensity * 4, 2, 12))
+	for _ = 1, numBits do
+		local bit = Instance.new("Part")
+		bit.Name = "_ImpactDebris"
+		bit.Size = Vector3.new(0.4, 0.4, 0.4) * (math.random() * 0.5 + 0.5) * intensity
+		bit.Position = pos + Vector3.new(math.random(-10, 10) / 10, math.random(0, 10) / 10, math.random(-10, 10) / 10)
+		bit.Material = Enum.Material.Slate
+		bit.Color = Color3.fromRGB(120, 120, 120)
+		bit.CanCollide = true
+		bit.Parent = workspace
+
+		local bv = Instance.new("BodyVelocity")
+		bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+		local spread = Vector3.new(math.random(-100, 100) / 100, math.random(50, 150) / 100, math.random(-100, 100) / 100)
+		bv.Velocity = spread.Unit * (math.random(15, 45) * intensity)
+		bv.Parent = bit
+
+		Debris:AddItem(bv, 0.1)
+		Debris:AddItem(bit, math.random(2, 4))
+	end
+end
+
+rImpactVFX.OnClientEvent:Connect(function(pos: Vector3, speed: number)
+	spawnImpactVFX(pos, speed)
+end)
 
 local beamFolder: Folder? = nil
 local beamPart0: Part? = nil
@@ -210,7 +278,6 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 		return
 	end
 
-	-- rmb: flick throw or gentle drop
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		if grabbed then
 			if avgMouseSpeed() >= THROW_FLICK_THRESHOLD then
@@ -222,7 +289,6 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 		return
 	end
 
-	-- mmb: quick drop
 	if input.UserInputType == Enum.UserInputType.MouseButton3 then
 		releaseGrab()
 		return
@@ -254,4 +320,4 @@ RS.RenderStepped:Connect(function()
 	rGrabMove:FireServer(targetPos, targetCF)
 end)
 
-print("[Client] v04 flick throw active.")
+print("[Client] v05 impact debris loaded.")
