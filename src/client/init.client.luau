@@ -20,6 +20,10 @@ local rGrabFreeze = remotesFolder:WaitForChild("GrabFreeze") :: RemoteEvent
 local rGrabColor = remotesFolder:WaitForChild("GrabColor") :: RemoteEvent
 local rGrabScale = remotesFolder:WaitForChild("GrabScale") :: RemoteEvent
 local rImpactVFX = remotesFolder:WaitForChild("ImpactVFX") :: RemoteEvent
+local rGrabNotify = remotesFolder:WaitForChild("GrabNotify") :: RemoteEvent
+local rGrabEscape = remotesFolder:WaitForChild("GrabEscape") :: RemoteEvent
+local rGrabCancel = remotesFolder:WaitForChild("GrabCancel") :: RemoteEvent
+local rGrabBroadcast = remotesFolder:WaitForChild("GrabBroadcast") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
 local GRAB_MIN_DIST = 3
@@ -59,6 +63,10 @@ local SCALE_STEP = 0.03
 local SCALE_MIN = 0.15
 local SCALE_MAX = 8.0
 
+local isBeingHeld = false
+local holdStartTime = 0
+local escapeAvailable = false
+local GRAB_ESCAPE_TIME = 10
 local lastMousePos = Vector2.new(0, 0)
 local mouseSpeedBuf: {number} = {}
 
@@ -267,7 +275,13 @@ local function updateVisuals(targetPart: BasePart)
 end
 
 local function enforceFirstPerson()
-	camera.CameraType = Enum.CameraType.Custom
+	if not isBeingHeld then
+		camera.CameraType = Enum.CameraType.Custom
+		localPlayer.CameraMode = Enum.CameraMode.LockFirstPerson
+		localPlayer.CameraMinZoomDistance = 0.5
+		localPlayer.CameraMaxZoomDistance = 0.5
+	end
+end
 	localPlayer.CameraMode = Enum.CameraMode.LockFirstPerson
 	localPlayer.CameraMinZoomDistance = 0.5
 	localPlayer.CameraMaxZoomDistance = 0.5
@@ -452,4 +466,147 @@ RS.RenderStepped:Connect(function(dt: number)
 	end
 end)
 
-print("[Client] v09 npc ragdoll loaded.")
+-- cheap escape hud
+local escapeFrame = Instance.new("Frame")
+escapeFrame.Name = "EscapeHUD"
+escapeFrame.Size = UDim2.new(0, 260, 0, 42)
+escapeFrame.Position = UDim2.new(0.5, -130, 0.8, 0)
+escapeFrame.BackgroundColor3 = Color3.fromRGB(30, 20, 20)
+escapeFrame.BorderSizePixel = 0
+escapeFrame.Visible = false
+escapeFrame.Parent = screenGui
+Instance.new("UICorner", escapeFrame).CornerRadius = UDim.new(0, 6)
+
+local escapeLabel = Instance.new("TextLabel", escapeFrame)
+escapeLabel.Size = UDim2.new(1, 0, 1, 0)
+escapeLabel.BackgroundTransparency = 1
+escapeLabel.Font = Enum.Font.GothamBold
+escapeLabel.TextSize = 13
+escapeLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+escapeLabel.Text = "HELD! Escaping in 10s..."
+
+local victimConn: RBXScriptConnection? = nil
+
+rGrabNotify.OnClientEvent:Connect(function(isHeld: boolean)
+	if isHeld then
+		isBeingHeld = true
+		holdStartTime = tick()
+		escapeAvailable = false
+		escapeFrame.Visible = true
+		escapeLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+
+		local char = localPlayer.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.PlatformStand = true
+				hum.AutoRotate = false
+				hum:ChangeState(Enum.HumanoidStateType.Physics)
+			end
+			for _, desc in ipairs(char:GetDescendants()) do
+				if desc:IsA("Motor6D") then desc.Enabled = false end
+			end
+		end
+
+		localPlayer.CameraMode = Enum.CameraMode.Classic
+		localPlayer.CameraMaxZoomDistance = 10
+		localPlayer.CameraMinZoomDistance = 5
+
+		if victimConn then victimConn:Disconnect() end
+		victimConn = RS.Heartbeat:Connect(function()
+			local elapsed = tick() - holdStartTime
+			if elapsed >= GRAB_ESCAPE_TIME then
+				escapeAvailable = true
+				escapeLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+				escapeLabel.Text = "READY! Press [Space] to break free"
+			else
+				local rem = math.ceil(GRAB_ESCAPE_TIME - elapsed)
+				escapeLabel.Text = "HELD! Escape ready in " .. rem .. "s..."
+			end
+		end)
+	else
+		isBeingHeld = false
+		escapeAvailable = false
+		escapeFrame.Visible = false
+
+		local char = localPlayer.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.PlatformStand = false
+				hum.AutoRotate = true
+				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end
+			for _, desc in ipairs(char:GetDescendants()) do
+				if desc:IsA("Motor6D") then desc.Enabled = true end
+			end
+		end
+
+		if victimConn then victimConn:Disconnect(); victimConn = nil end
+		enforceFirstPerson()
+	end
+end)
+
+rGrabCancel.OnClientEvent:Connect(function()
+	if grabbed then clearGrabState() end
+end)
+
+-- red beams for other players
+local otherGrabs: {[Player]: {folder: Folder?, conn: RBXScriptConnection?}} = {}
+
+local function removeOtherBeam(grabber: Player)
+	local d = otherGrabs[grabber]
+	if d then
+		if d.conn then d.conn:Disconnect() end
+		if d.folder and d.folder.Parent then d.folder:Destroy() end
+		otherGrabs[grabber] = nil
+	end
+end
+
+local function createOtherBeam(grabber: Player, part: BasePart)
+	removeOtherBeam(grabber)
+	local char = grabber.Character; if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart; if not hrp then return end
+
+	local folder = Instance.new("Folder")
+	folder.Name = "_OtherFling_" .. grabber.Name
+	folder.Parent = workspace
+
+	local p0 = Instance.new("Part"); p0.Size = Vector3.new(0.05, 0.05, 0.05)
+	p0.Anchored = true; p0.CanCollide = false; p0.Transparency = 1; p0.Parent = folder
+	local p1 = Instance.new("Part"); p1.Size = Vector3.new(0.05, 0.05, 0.05)
+	p1.Anchored = true; p1.CanCollide = false; p1.Transparency = 1; p1.Parent = folder
+	local a0 = Instance.new("Attachment", p0)
+	local a1 = Instance.new("Attachment", p1)
+
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = a0; beam.Attachment1 = a1
+	beam.Color = ColorSequence.new(Color3.fromRGB(255, 60, 60))
+	beam.Width0 = 0.25; beam.Width1 = 0.08
+	beam.FaceCamera = true
+	beam.Parent = p0
+
+	local conn = RS.RenderStepped:Connect(function()
+		if not hrp.Parent or not part.Parent then removeOtherBeam(grabber); return end
+		p0.CFrame = CFrame.new(hrp.Position)
+		p1.CFrame = CFrame.new(part.Position)
+		local dist = (part.Position - hrp.Position).Magnitude
+		beam.CurveSize0 = dist * 0.2; beam.CurveSize1 = dist * 0.2
+	end)
+
+	otherGrabs[grabber] = { folder = folder, conn = conn }
+end
+
+rGrabBroadcast.OnClientEvent:Connect(function(grabber: Player, part: BasePart?)
+	if grabber == localPlayer then return end
+	if part then createOtherBeam(grabber, part) else removeOtherBeam(grabber) end
+end)
+
+-- space key breaks free
+UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
+	if input.KeyCode == Enum.KeyCode.Space and isBeingHeld then
+		if escapeAvailable then rGrabEscape:FireServer() end
+	end
+end)
+
+print("[Client] v10 player grab active.")

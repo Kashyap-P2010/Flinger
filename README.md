@@ -1,8 +1,8 @@
-# AvoneTrial (v09)
+# AvoneTrial (v10)
 
-spawn r6 dummy npcs on baseplate and floppy ragdoll joint conversion.
+player to player grab, escape timer, and red beam visual for other players.
 
 ## changes
-- converts motor6ds into ballsocketconstraints when grabbed
-- 5 wander npcs with random walk
-- pauses walk while ragdolled
+- victim enters ragdoll and gets a 10s escape countdown bar
+- space breaks free when escape is ready
+- red beams rendered for other players grabbing

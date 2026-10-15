@@ -34,6 +34,10 @@ local rGrabThrow = getOrCreateRemote("GrabThrow")
 local rGrabFreeze = getOrCreateRemote("GrabFreeze")
 local rGrabColor = getOrCreateRemote("GrabColor")
 local rGrabScale = getOrCreateRemote("GrabScale")
+local rGrabNotify = getOrCreateRemote("GrabNotify")
+local rGrabEscape = getOrCreateRemote("GrabEscape")
+local rGrabCancel = getOrCreateRemote("GrabCancel")
+local rGrabBroadcast = getOrCreateRemote("GrabBroadcast")
 local rImpactVFX = getOrCreateRemote("ImpactVFX")
 
 local GRAB_MAX_DIST = 50
@@ -50,6 +54,7 @@ local SCALE_MAX = 8.0
 local NPC_COUNT = 5
 local NPC_WANDER_RADIUS = 45
 local NPC_WALK_SPEED = 8
+local GRAB_ESCAPE_TIME = 10
 
 local grabState: {[Player]: any} = {}
 
@@ -57,7 +62,25 @@ local grabState: {[Player]: any} = {}
 local TAG_RAGDOLLED = "IsRagdolled"
 local TAG_GRABBED = "IsGrabbed"
 
-local function isNPCModel(part: BasePart): (boolean, Model?)
+local function classifyHit(hitPart: BasePart, grabber: Player): (boolean, Model?, Player?)
+	local obj: Instance = hitPart
+	while obj and obj ~= workspace do
+		if obj:IsA("Model") then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			if hum then
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p.Character == obj then
+						if p == grabber then return false, nil, nil end
+						return false, nil, p
+					end
+				end
+				return true, obj :: Model, nil
+			end
+		end
+		obj = obj.Parent
+	end
+	return false, nil, nil
+end
 	local obj: Instance = part
 	while obj and obj ~= workspace do
 		if obj:IsA("Model") then
@@ -219,7 +242,7 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		grabState[player] = nil
 	end
 
-	local isNPC, npcModel = isNPCModel(hitPart)
+	local isNPC, npcModel, victimPlayer = classifyHit(hitPart, player)
 	local rootPart = getRootPart(hitPart)
 	if not rootPart or rootPart.Anchored then return end
 
@@ -231,6 +254,18 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		ragdoll(npcModel)
 		npcModel:SetAttribute("IsGrabbed", true)
 		task.wait(0.05)
+	end
+
+	if victimPlayer then
+		local victimChar = victimPlayer.Character
+		if victimChar then
+			for _, p in ipairs(victimChar:GetDescendants()) do
+				if p:IsA("BasePart") then pcall(p.SetNetworkOwner, p, nil) end
+			end
+			ragdoll(victimChar)
+			task.wait(0.05)
+		end
+		pcall(function() rGrabNotify:FireClient(victimPlayer, true) end)
 	end
 
 	local bp, bg = attachBodyMovers(rootPart)
@@ -245,8 +280,11 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		lerpedPos = rootPart.Position,
 		isLonePart = isLonePart,
 		npcModel = npcModel,
+		victimPlayer = victimPlayer,
 		originalSize = isLonePart and rootPart.Size or nil,
+		grabStartTime = victimPlayer and tick() or nil,
 	}
+	pcall(function() rGrabBroadcast:FireAllClients(player, rootPart) end)
 end)
 
 rGrabMove.OnServerEvent:Connect(function(player: Player, targetPos: Vector3, targetCF: CFrame)
@@ -266,6 +304,7 @@ rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	end
 	cleanupGrab(state, 2)
 	grabState[player] = nil
+	pcall(function() rGrabBroadcast:FireAllClients(player, nil) end)
 end)
 
 rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, speed: number)
@@ -279,6 +318,7 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	end
 	cleanupGrab(state, 3)
 	grabState[player] = nil
+	pcall(function() rGrabBroadcast:FireAllClients(player, nil) end)
 
 	if not part or not part.Parent then return end
 	speed = math.clamp(speed or THROW_FORCE, 10, THROW_FORCE * 2)
@@ -451,4 +491,30 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 end)
 
-print("[Server] v09 npc system initialized.")
+-- victim escape listener
+rGrabEscape.OnServerEvent:Connect(function(escaper: Player)
+	local grabberFound: Player? = nil
+	local stateFound: any = nil
+
+	for grabber, state in pairs(grabState) do
+		if state.victimPlayer == escaper then
+			grabberFound = grabber
+			stateFound = state
+			break
+		end
+	end
+
+	if not grabberFound or not stateFound then return end
+
+	local elapsed = tick() - (stateFound.grabStartTime or 0)
+	if elapsed < GRAB_ESCAPE_TIME then return end
+
+	local victimChar = escaper.Character
+	if victimChar then task.spawn(function() unragdoll(victimChar) end) end
+
+	cleanupGrab(stateFound, 0)
+	grabState[grabberFound] = nil
+	pcall(function() rGrabCancel:FireClient(grabberFound) end)
+end)
+
+print("[Server] v10 player grabbing active.")
