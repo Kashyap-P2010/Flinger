@@ -1,8 +1,9 @@
 -- init.server.luau
--- freeze ray anchoring & color spray
+-- r6 npc spawning, wander ai & floppy ragdolls
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
 local FOLDER_NAME = "GameRemotes"
 local function getRemoteFolder(): Folder
@@ -46,8 +47,95 @@ local GYRO_LERP_ALPHA = 0.28
 local THROW_FORCE = 140
 local SCALE_MIN = 0.15
 local SCALE_MAX = 8.0
+local NPC_COUNT = 5
+local NPC_WANDER_RADIUS = 45
+local NPC_WALK_SPEED = 8
 
 local grabState: {[Player]: any} = {}
+
+-- ragdoll logic
+local TAG_RAGDOLLED = "IsRagdolled"
+local TAG_GRABBED = "IsGrabbed"
+
+local function isNPCModel(part: BasePart): (boolean, Model?)
+	local obj: Instance = part
+	while obj and obj ~= workspace do
+		if obj:IsA("Model") then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			if hum then
+				for _, player in ipairs(Players:GetPlayers()) do
+					if player.Character == obj then return false, nil end
+				end
+				return true, obj :: Model
+			end
+		end
+		obj = obj.Parent
+	end
+	return false, nil
+end
+
+local function ragdoll(model: Model)
+	if model:GetAttribute(TAG_RAGDOLLED) then return end
+	model:SetAttribute(TAG_RAGDOLLED, true)
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.PlatformStand = true
+		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+	end
+
+	for _, motor in ipairs(model:GetDescendants()) do
+		if motor:IsA("Motor6D") and motor.Part0 and motor.Part1 then
+			motor.Enabled = false
+
+			local att0 = Instance.new("Attachment")
+			att0.Name = "_RagAtt0"; att0.CFrame = motor.C0; att0.Parent = motor.Part0
+			local att1 = Instance.new("Attachment")
+			att1.Name = "_RagAtt1"; att1.CFrame = motor.C1; att1.Parent = motor.Part1
+
+			local bsc = Instance.new("BallSocketConstraint")
+			bsc.Name = "_RagBSC"
+			bsc.Attachment0 = att0
+			bsc.Attachment1 = att1
+			bsc.LimitsEnabled = true
+			bsc.UpperAngle = 55
+			bsc.TwistLimitsEnabled = false
+			bsc.Parent = motor.Part0
+		end
+	end
+
+	for _, obj in ipairs(model:GetDescendants()) do
+		if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
+			obj.CanCollide = true
+		end
+	end
+end
+
+local function unragdoll(model: Model)
+	if not model:GetAttribute(TAG_RAGDOLLED) then return end
+	if model:GetAttribute(TAG_GRABBED) then return end
+	model:SetAttribute(TAG_RAGDOLLED, false)
+
+	for _, obj in ipairs(model:GetDescendants()) do
+		if obj.Name == "_RagBSC" or obj.Name == "_RagAtt0" or obj.Name == "_RagAtt1" then
+			obj:Destroy()
+		end
+	end
+
+	for _, motor in ipairs(model:GetDescendants()) do
+		if motor:IsA("Motor6D") then motor.Enabled = true end
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.PlatformStand = false
+		task.wait(0.05)
+		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+
+	local hrp = model:FindFirstChild("HumanoidRootPart") :: BasePart
+	if hrp then hrp.CFrame = hrp.CFrame + Vector3.new(0, 1.5, 0) end
+end
 
 local function getRootPart(hit: BasePart): BasePart?
 	local obj: Instance = hit
@@ -96,9 +184,16 @@ local function removeBodyMovers(part: BasePart)
 	local bg = part:FindFirstChild("_FlingBodyGyro"); if bg then bg:Destroy() end
 end
 
-local function cleanupGrab(state: any)
-	if state and state.part then
-		pcall(removeBodyMovers, state.part)
+local function cleanupGrab(state: any, delay: number?)
+	pcall(removeBodyMovers, state.part)
+
+	if state.npcModel and state.npcModel.Parent then
+		state.npcModel:SetAttribute("IsGrabbed", false)
+		task.delay(delay or 2, function()
+			if state.npcModel and state.npcModel.Parent then
+				unragdoll(state.npcModel)
+			end
+		end)
 	end
 end
 
@@ -120,10 +215,11 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 
 	local existing = grabState[player]
 	if existing then
-		cleanupGrab(existing)
+		cleanupGrab(existing, 1)
 		grabState[player] = nil
 	end
 
+	local isNPC, npcModel = isNPCModel(hitPart)
 	local rootPart = getRootPart(hitPart)
 	if not rootPart or rootPart.Anchored then return end
 
@@ -131,7 +227,15 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart; if not hrp then return end
 	if (rootPart.Position - hrp.Position).Magnitude > GRAB_MAX_DIST + 5 then return end
 
+	if isNPC and npcModel then
+		ragdoll(npcModel)
+		npcModel:SetAttribute("IsGrabbed", true)
+		task.wait(0.05)
+	end
+
 	local bp, bg = attachBodyMovers(rootPart)
+	local isLonePart = (rootPart.Parent == workspace)
+
 	grabState[player] = {
 		part = rootPart,
 		bodyPos = bp,
@@ -139,8 +243,9 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 		targetPos = rootPart.Position,
 		targetCF = rootPart.CFrame,
 		lerpedPos = rootPart.Position,
-		isLonePart = (rootPart.Parent == workspace),
-		originalSize = (rootPart.Parent == workspace) and rootPart.Size or nil,
+		isLonePart = isLonePart,
+		npcModel = npcModel,
+		originalSize = isLonePart and rootPart.Size or nil,
 	}
 end)
 
@@ -159,7 +264,7 @@ rGrabRelease.OnServerEvent:Connect(function(player: Player)
 	if state.frozen and state.part and state.part.Parent then
 		state.part.Anchored = false
 	end
-	cleanupGrab(state)
+	cleanupGrab(state, 2)
 	grabState[player] = nil
 end)
 
@@ -172,7 +277,7 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	if state.frozen and part and part.Parent then
 		part.Anchored = false
 	end
-	cleanupGrab(state)
+	cleanupGrab(state, 3)
 	grabState[player] = nil
 
 	if not part or not part.Parent then return end
@@ -209,10 +314,10 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	end)
 end)
 
--- freeze ray mid-air toggle
 rGrabFreeze.OnServerEvent:Connect(function(player: Player, isFrozen: boolean)
 	local state = grabState[player]
 	if not state or not state.part or not state.part.Parent then return end
+	if state.npcModel then return end
 
 	if isFrozen then
 		pcall(removeBodyMovers, state.part)
@@ -230,11 +335,19 @@ rGrabFreeze.OnServerEvent:Connect(function(player: Player, isFrozen: boolean)
 	end
 end)
 
--- color spray
 rGrabColor.OnServerEvent:Connect(function(player: Player, color: Color3)
 	local state = grabState[player]
 	if not state or not state.part or not state.part.Parent then return end
 	if typeof(color) ~= "Color3" then return end
+
+	if state.npcModel then
+		for _, obj in ipairs(state.npcModel:GetDescendants()) do
+			if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
+				obj.Color = color
+			end
+		end
+		return
+	end
 
 	if state.isLonePart then
 		state.part.Color = color
@@ -253,15 +366,6 @@ rGrabColor.OnServerEvent:Connect(function(player: Player, color: Color3)
 	end
 end)
 
-Players.PlayerRemoving:Connect(function(player: Player)
-	local state = grabState[player]
-	if state then
-		cleanupGrab(state)
-		grabState[player] = nil
-	end
-end)
-
--- scale lone parts or models
 rGrabScale.OnServerEvent:Connect(function(player: Player, multiplier: number)
 	local state = grabState[player]
 	if not state or typeof(multiplier) ~= "number" then return end
@@ -275,4 +379,76 @@ rGrabScale.OnServerEvent:Connect(function(player: Player, multiplier: number)
 	end
 end)
 
-print("[Server] v08 scaling active.")
+-- simple npc wander ai
+local function startWander(model: Model)
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+	humanoid.WalkSpeed = NPC_WALK_SPEED
+
+	task.spawn(function()
+		while model and model.Parent do
+			if model:GetAttribute("IsRagdolled") or model:GetAttribute("IsGrabbed") then
+				task.wait(0.3)
+				continue
+			end
+
+			local angle = math.random() * math.pi * 2
+			local radius = math.random(8, NPC_WANDER_RADIUS)
+			local target = Vector3.new(math.cos(angle) * radius, 0.5, math.sin(angle) * radius)
+			humanoid:MoveTo(target)
+
+			local arrived = false
+			local conn
+			conn = humanoid.MoveToFinished:Connect(function()
+				arrived = true
+				conn:Disconnect()
+			end)
+
+			local elapsed = 0
+			while not arrived and elapsed < 8 do
+				task.wait(0.2)
+				elapsed += 0.2
+				if model:GetAttribute("IsRagdolled") or model:GetAttribute("IsGrabbed") then
+					if conn then conn:Disconnect() end
+					break
+				end
+			end
+			if conn then pcall(function() conn:Disconnect() end) end
+			task.wait(math.random(1, 3))
+		end
+	end)
+end
+
+-- spawn npcs in ring
+local NPC_NAMES = { "Bob", "Steve", "Dave", "Jim", "Max" }
+task.spawn(function()
+	task.wait(1.5)
+	local template = ServerStorage:FindFirstChild("NPCRig")
+	if not template then return end
+
+	for i = 1, NPC_COUNT do
+		local angle = (i / NPC_COUNT) * math.pi * 2
+		local radius = math.random(15, 30)
+		local pos = Vector3.new(math.cos(angle) * radius, 4, math.sin(angle) * radius)
+
+		local model = template:Clone()
+		model.Name = "NPC_" .. (NPC_NAMES[i] or ("Guy" .. i))
+		local anim = model:FindFirstChild("Animate"); if anim then anim:Destroy() end
+
+		local hrp = model:FindFirstChild("HumanoidRootPart") :: BasePart
+		if hrp then hrp.CFrame = CFrame.new(pos) end
+		model.Parent = workspace
+		task.delay(0.5, function() startWander(model) end)
+		task.wait(0.2)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player: Player)
+	local state = grabState[player]
+	if state then
+		cleanupGrab(state, 0)
+		grabState[player] = nil
+	end
+end)
+
+print("[Server] v09 npc system initialized.")

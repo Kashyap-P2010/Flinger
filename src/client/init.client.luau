@@ -452,4 +452,4 @@ RS.RenderStepped:Connect(function(dt: number)
 	end
 end)
 
-print("[Client] v08 scaling active.")
+print("[Client] v09 npc ragdoll loaded.")

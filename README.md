@@ -1,8 +1,8 @@
-# AvoneTrial (v08)
+# AvoneTrial (v09)
 
-continuous scale up/down with z and x keys.
+spawn r6 dummy npcs on baseplate and floppy ragdoll joint conversion.
 
 ## changes
-- hold z to scale bigger
-- hold x to scale smaller
-- clamps between 0.15 and 8.0x
+- converts motor6ds into ballsocketconstraints when grabbed
+- 5 wander npcs with random walk
+- pauses walk while ragdolled
