@@ -1,8 +1,9 @@
-# AvoneTrial (v11)
+# AvoneTrial (v12)
 
-datastore coins economy, reward block touch part, and top right coin counter.
+full system w cheap simple shop menu, item previews, starter plank & clean code.
 
-## changes
-- datastore auto save on leave & shutdown
-- reward block gives 500 coins every 10s
-- simple coin label top right
+## features
+- e key toggles shop window
+- cards with item name, price and buy button
+- starter plank spawns automatically
+- full physics, ragdoll, escape timer & particles

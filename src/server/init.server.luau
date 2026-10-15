@@ -1,8 +1,10 @@
 -- init.server.luau
--- r6 npc spawning, wander ai & floppy ragdolls
+-- complete server system (engine minimum 1 file)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService = game:GetService("DataStoreService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 
 local FOLDER_NAME = "GameRemotes"
@@ -38,30 +40,158 @@ local rGrabNotify = getOrCreateRemote("GrabNotify")
 local rGrabEscape = getOrCreateRemote("GrabEscape")
 local rGrabCancel = getOrCreateRemote("GrabCancel")
 local rGrabBroadcast = getOrCreateRemote("GrabBroadcast")
-local rUpdateCoins = getOrCreateRemote("UpdateCoins")
-local DataStoreService = game:GetService("DataStoreService")
-local ServerScriptService = game:GetService("ServerScriptService")
 local rImpactVFX = getOrCreateRemote("ImpactVFX")
+local rPurchase = getOrCreateRemote("PurchaseItem")
+local rUpdateCoins = getOrCreateRemote("UpdateCoins")
+local rSpawnItem = getOrCreateRemote("SpawnItem")
 
-local GRAB_MAX_DIST = 50
-local POSITION_P = 12000
-local POSITION_D = 800
-local POSITION_MAX_FORCE = 1e5
-local GYRO_P = 6e4
-local GYRO_MAX_TORQUE = 8e4
-local POSITION_LERP_ALPHA = 0.30
-local GYRO_LERP_ALPHA = 0.28
-local THROW_FORCE = 140
-local SCALE_MIN = 0.15
-local SCALE_MAX = 8.0
-local NPC_COUNT = 5
-local NPC_WANDER_RADIUS = 45
-local NPC_WALK_SPEED = 8
-local GRAB_ESCAPE_TIME = 10
+local CFG = {
+	GRAB_MAX_DISTANCE = 50,
+	GRAB_MIN_DIST = 3,
+	GRAB_MAX_DIST = 40,
+	GRAB_DEFAULT_DIST = 15,
+	SCROLL_SENSITIVITY = 1.2,
+	THROW_FLICK_THRESHOLD = 6,
+	THROW_FLICK_SAMPLES = 5,
+	THROW_FORCE = 140,
+	ROT_SENSITIVITY = 0.004,
+	POSITION_P = 12000,
+	POSITION_D = 800,
+	POSITION_MAX_FORCE = 1e5,
+	GYRO_P = 6e4,
+	GYRO_MAX_TORQUE = 8e4,
+	POSITION_LERP_ALPHA = 0.30,
+	GYRO_LERP_ALPHA = 0.28,
+	SCALE_MIN = 0.15,
+	SCALE_MAX = 8.0,
+	SCALE_STEP = 0.03,
+	NPC_COUNT = 5,
+	NPC_WANDER_RADIUS = 45,
+	NPC_WALK_SPEED = 8,
+	GRAB_ESCAPE_TIME = 10,
+	DATASTORE_NAME = "FlingGameData_v3",
+	REWARD_PART_NAME = "RewardPart",
+	REWARD_COINS = 500,
+	REWARD_COOLDOWN = 10,
+	SHOP_ITEMS = {
+		{ id = "WoodenPlank", displayName = "Wooden Plank", price = 0, isStarter = true },
+		{ id = "Doll", displayName = "Doll", price = 200, description = "A creepy little doll." },
+		{ id = "Chest", displayName = "Chest", price = 350, description = "A heavy wooden chest." },
+		{ id = "Duck", displayName = "Duck", price = 500, description = "The legendary rubber duck." },
+	}
+}
 
+-- datastore & player data
+local DataStore = DataStoreService:GetDataStore(CFG.DATASTORE_NAME)
+local playerData: {[Player]: any} = {}
+local playerSpawnedItem: {[Player]: Instance?} = {}
+
+local function loadData(player: Player)
+	local key = "player_" .. player.UserId
+	local success, result = pcall(function() return DataStore:GetAsync(key) end)
+	local data
+	if success then
+		data = {
+			coins = (result and result.coins) or 0,
+			ownedItems = (result and result.ownedItems) or { WoodenPlank = true },
+		}
+		data.ownedItems["WoodenPlank"] = true
+	else
+		data = { coins = 0, ownedItems = { WoodenPlank = true }, _loadFailed = true }
+	end
+	playerData[player] = data
+end
+
+local function saveData(player: Player)
+	local data = playerData[player]
+	if not data or data._loadFailed then return end
+	local key = "player_" .. player.UserId
+	pcall(function()
+		DataStore:UpdateAsync(key, function()
+			return { coins = data.coins, ownedItems = data.ownedItems }
+		end)
+	end)
+end
+
+local CoinsAPI = {}
+function CoinsAPI.addCoins(player: Player, amount: number)
+	local data = playerData[player]; if not data then return end
+	data.coins = data.coins + amount
+	rUpdateCoins:FireClient(player, data.coins)
+end
+
+local coinsBindable = Instance.new("BindableFunction")
+coinsBindable.Name = "CoinsAPI"
+coinsBindable.Parent = ServerScriptService
+coinsBindable.OnInvoke = function(action: string, player: Player, amount: number)
+	if action == "addCoins" then CoinsAPI.addCoins(player, amount); return true
+	elseif action == "getCoins" then return (playerData[player] and playerData[player].coins) or 0 end
+	return nil
+end
+
+local function getItemTemplate(itemId: string): Instance?
+	local item = ReplicatedStorage:FindFirstChild(itemId)
+	if not item then
+		for _, child in ipairs(ReplicatedStorage:GetChildren()) do
+			if child:IsA("Folder") then
+				local found = child:FindFirstChild(itemId)
+				if found then item = found; break end
+			end
+		end
+	end
+	return item
+end
+
+local function spawnItemForPlayer(player: Player, itemId: string)
+	local char = player.Character; if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart; if not hrp then return end
+
+	local existing = playerSpawnedItem[player]
+	if existing and existing.Parent then existing:Destroy() end
+	playerSpawnedItem[player] = nil
+
+	local template = getItemTemplate(itemId)
+	local spawnCF = hrp.CFrame * CFrame.new(0, 2, -5)
+	local clone: Instance? = nil
+
+	if template then
+		clone = template:Clone()
+		if clone:IsA("Model") then
+			if clone.PrimaryPart then
+				clone.PrimaryPart.Anchored = false
+				clone:SetPrimaryPartCFrame(spawnCF)
+			else
+				local fp = clone:FindFirstChildWhichIsA("BasePart")
+				if fp then clone.PrimaryPart = fp; fp.Anchored = false; clone:SetPrimaryPartCFrame(spawnCF) end
+			end
+			for _, part in ipairs(clone:GetDescendants()) do
+				if part:IsA("BasePart") then part.Anchored = false end
+			end
+		elseif clone:IsA("BasePart") then
+			clone.Anchored = false
+			clone.CFrame = spawnCF
+		end
+	elseif itemId == "WoodenPlank" then
+		local plank = Instance.new("Part")
+		plank.Name = "WoodenPlank"
+		plank.Size = Vector3.new(8, 0.5, 2)
+		plank.Material = Enum.Material.Wood
+		plank.Color = Color3.fromRGB(163, 120, 63)
+		plank.Anchored = false
+		plank.CFrame = spawnCF
+		clone = plank
+	end
+
+	if clone then
+		clone:SetAttribute("OwnerId", player.UserId)
+		clone.Parent = workspace
+		playerSpawnedItem[player] = clone
+		rSpawnItem:FireClient(player, itemId, clone)
+	end
+end
+
+-- grab & physics state
 local grabState: {[Player]: any} = {}
-
--- ragdoll logic
 local TAG_RAGDOLLED = "IsRagdolled"
 local TAG_GRABBED = "IsGrabbed"
 
@@ -84,21 +214,6 @@ local function classifyHit(hitPart: BasePart, grabber: Player): (boolean, Model?
 	end
 	return false, nil, nil
 end
-	local obj: Instance = part
-	while obj and obj ~= workspace do
-		if obj:IsA("Model") then
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			if hum then
-				for _, player in ipairs(Players:GetPlayers()) do
-					if player.Character == obj then return false, nil end
-				end
-				return true, obj :: Model
-			end
-		end
-		obj = obj.Parent
-	end
-	return false, nil
-end
 
 local function ragdoll(model: Model)
 	if model:GetAttribute(TAG_RAGDOLLED) then return end
@@ -114,10 +229,8 @@ local function ragdoll(model: Model)
 		if motor:IsA("Motor6D") and motor.Part0 and motor.Part1 then
 			motor.Enabled = false
 
-			local att0 = Instance.new("Attachment")
-			att0.Name = "_RagAtt0"; att0.CFrame = motor.C0; att0.Parent = motor.Part0
-			local att1 = Instance.new("Attachment")
-			att1.Name = "_RagAtt1"; att1.CFrame = motor.C1; att1.Parent = motor.Part1
+			local att0 = Instance.new("Attachment"); att0.Name = "_RagAtt0"; att0.CFrame = motor.C0; att0.Parent = motor.Part0
+			local att1 = Instance.new("Attachment"); att1.Name = "_RagAtt1"; att1.CFrame = motor.C1; att1.Parent = motor.Part1
 
 			local bsc = Instance.new("BallSocketConstraint")
 			bsc.Name = "_RagBSC"
@@ -189,16 +302,16 @@ local function attachBodyMovers(part: BasePart)
 
 	local bp = Instance.new("BodyPosition")
 	bp.Name = "_FlingBodyPos"
-	bp.P = POSITION_P
-	bp.D = POSITION_D
-	bp.MaxForce = Vector3.new(POSITION_MAX_FORCE, POSITION_MAX_FORCE, POSITION_MAX_FORCE)
+	bp.P = CFG.POSITION_P
+	bp.D = CFG.POSITION_D
+	bp.MaxForce = Vector3.new(CFG.POSITION_MAX_FORCE, CFG.POSITION_MAX_FORCE, CFG.POSITION_MAX_FORCE)
 	bp.Position = part.Position
 	bp.Parent = part
 
 	local bg = Instance.new("BodyGyro")
 	bg.Name = "_FlingBodyGyro"
-	bg.P = GYRO_P
-	bg.MaxTorque = Vector3.new(GYRO_MAX_TORQUE, GYRO_MAX_TORQUE, GYRO_MAX_TORQUE)
+	bg.P = CFG.GYRO_P
+	bg.MaxTorque = Vector3.new(CFG.GYRO_MAX_TORQUE, CFG.GYRO_MAX_TORQUE, CFG.GYRO_MAX_TORQUE)
 	bg.CFrame = part.CFrame
 	bg.Parent = part
 
@@ -216,21 +329,34 @@ local function cleanupGrab(state: any, delay: number?)
 	if state.npcModel and state.npcModel.Parent then
 		state.npcModel:SetAttribute("IsGrabbed", false)
 		task.delay(delay or 2, function()
-			if state.npcModel and state.npcModel.Parent then
-				unragdoll(state.npcModel)
-			end
+			if state.npcModel and state.npcModel.Parent then unragdoll(state.npcModel) end
 		end)
+	end
+
+	if state.victimPlayer then
+		local victimChar = state.victimPlayer.Character
+		if victimChar then
+			task.delay(delay or 1.5, function()
+				if victimChar and victimChar.Parent then
+					for _, p in ipairs(victimChar:GetDescendants()) do
+						if p:IsA("BasePart") then pcall(p.SetNetworkOwner, p, state.victimPlayer) end
+					end
+					unragdoll(victimChar)
+				end
+			end)
+		end
+		pcall(function() rGrabNotify:FireClient(state.victimPlayer, false) end)
 	end
 end
 
 RunService.Heartbeat:Connect(function()
 	for _, state in pairs(grabState) do
 		if state.bodyPos and state.bodyPos.Parent then
-			state.lerpedPos = state.lerpedPos:Lerp(state.targetPos, POSITION_LERP_ALPHA)
+			state.lerpedPos = state.lerpedPos:Lerp(state.targetPos, CFG.POSITION_LERP_ALPHA)
 			state.bodyPos.Position = state.lerpedPos
 
 			if state.bodyGyro and state.bodyGyro.Parent then
-				state.bodyGyro.CFrame = state.bodyGyro.CFrame:Lerp(state.targetCF, GYRO_LERP_ALPHA)
+				state.bodyGyro.CFrame = state.bodyGyro.CFrame:Lerp(state.targetCF, CFG.GYRO_LERP_ALPHA)
 			end
 		end
 	end
@@ -251,7 +377,7 @@ rGrabStart.OnServerEvent:Connect(function(player: Player, hitPart: BasePart)
 
 	local char = player.Character; if not char then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart; if not hrp then return end
-	if (rootPart.Position - hrp.Position).Magnitude > GRAB_MAX_DIST + 5 then return end
+	if (rootPart.Position - hrp.Position).Magnitude > CFG.GRAB_MAX_DISTANCE + 5 then return end
 
 	if isNPC and npcModel then
 		ragdoll(npcModel)
@@ -316,24 +442,20 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	if typeof(direction) ~= "Vector3" then return end
 
 	local part = state.part
-	if state.frozen and part and part.Parent then
-		part.Anchored = false
-	end
+	if state.frozen and part and part.Parent then part.Anchored = false end
 	cleanupGrab(state, 3)
 	grabState[player] = nil
 	pcall(function() rGrabBroadcast:FireAllClients(player, nil) end)
 
 	if not part or not part.Parent then return end
-	speed = math.clamp(speed or THROW_FORCE, 10, THROW_FORCE * 2)
+	speed = math.clamp(speed or CFG.THROW_FORCE, 10, CFG.THROW_FORCE * 2)
 
 	local bv = Instance.new("BodyVelocity")
 	bv.Velocity = direction.Unit * speed
 	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
 	bv.P = 1e4
 	bv.Parent = part
-	task.delay(0.14, function()
-		if bv and bv.Parent then bv:Destroy() end
-	end)
+	task.delay(0.14, function() if bv and bv.Parent then bv:Destroy() end end)
 
 	local impactFired = false
 	local impactConn: RBXScriptConnection? = nil
@@ -357,10 +479,35 @@ rGrabThrow.OnServerEvent:Connect(function(player: Player, direction: Vector3, sp
 	end)
 end)
 
+rGrabEscape.OnServerEvent:Connect(function(escaper: Player)
+	local grabberFound: Player? = nil
+	local stateFound: any = nil
+
+	for grabber, state in pairs(grabState) do
+		if state.victimPlayer == escaper then
+			grabberFound = grabber
+			stateFound = state
+			break
+		end
+	end
+
+	if not grabberFound or not stateFound then return end
+
+	local elapsed = tick() - (stateFound.grabStartTime or 0)
+	if elapsed < CFG.GRAB_ESCAPE_TIME then return end
+
+	local victimChar = escaper.Character
+	if victimChar then task.spawn(function() unragdoll(victimChar) end) end
+
+	cleanupGrab(stateFound, 0)
+	grabState[grabberFound] = nil
+	pcall(function() rGrabCancel:FireClient(grabberFound) end)
+end)
+
 rGrabFreeze.OnServerEvent:Connect(function(player: Player, isFrozen: boolean)
 	local state = grabState[player]
 	if not state or not state.part or not state.part.Parent then return end
-	if state.npcModel then return end
+	if state.victimPlayer or state.npcModel then return end
 
 	if isFrozen then
 		pcall(removeBodyMovers, state.part)
@@ -383,11 +530,19 @@ rGrabColor.OnServerEvent:Connect(function(player: Player, color: Color3)
 	if not state or not state.part or not state.part.Parent then return end
 	if typeof(color) ~= "Color3" then return end
 
+	if state.victimPlayer then
+		local victimChar = state.victimPlayer.Character
+		if victimChar then
+			for _, obj in ipairs(victimChar:GetDescendants()) do
+				if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then obj.Color = color end
+			end
+		end
+		return
+	end
+
 	if state.npcModel then
 		for _, obj in ipairs(state.npcModel:GetDescendants()) do
-			if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
-				obj.Color = color
-			end
+			if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then obj.Color = color end
 		end
 		return
 	end
@@ -400,9 +555,7 @@ rGrabColor.OnServerEvent:Connect(function(player: Player, color: Color3)
 	local model = state.part.Parent
 	if model and model:IsA("Model") then
 		for _, obj in ipairs(model:GetDescendants()) do
-			if obj:IsA("BasePart") and not obj:IsA("UnionOperation") then
-				obj.Color = color
-			end
+			if obj:IsA("BasePart") and not obj:IsA("UnionOperation") then obj.Color = color end
 		end
 	else
 		state.part.Color = color
@@ -412,175 +565,92 @@ end)
 rGrabScale.OnServerEvent:Connect(function(player: Player, multiplier: number)
 	local state = grabState[player]
 	if not state or typeof(multiplier) ~= "number" then return end
-	multiplier = math.clamp(multiplier, SCALE_MIN, SCALE_MAX)
+	multiplier = math.clamp(multiplier, CFG.SCALE_MIN, CFG.SCALE_MAX)
 
 	if state.isLonePart and state.originalSize then
 		local part = state.part
-		if part and part.Parent then
-			part.Size = state.originalSize * multiplier
-		end
+		if part and part.Parent then part.Size = state.originalSize * multiplier end
 	end
 end)
 
--- simple npc wander ai
-local function startWander(model: Model)
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
-	humanoid.WalkSpeed = NPC_WALK_SPEED
-
-	task.spawn(function()
-		while model and model.Parent do
-			if model:GetAttribute("IsRagdolled") or model:GetAttribute("IsGrabbed") then
-				task.wait(0.3)
-				continue
-			end
-
-			local angle = math.random() * math.pi * 2
-			local radius = math.random(8, NPC_WANDER_RADIUS)
-			local target = Vector3.new(math.cos(angle) * radius, 0.5, math.sin(angle) * radius)
-			humanoid:MoveTo(target)
-
-			local arrived = false
-			local conn
-			conn = humanoid.MoveToFinished:Connect(function()
-				arrived = true
-				conn:Disconnect()
-			end)
-
-			local elapsed = 0
-			while not arrived and elapsed < 8 do
-				task.wait(0.2)
-				elapsed += 0.2
-				if model:GetAttribute("IsRagdolled") or model:GetAttribute("IsGrabbed") then
-					if conn then conn:Disconnect() end
-					break
-				end
-			end
-			if conn then pcall(function() conn:Disconnect() end) end
-			task.wait(math.random(1, 3))
-		end
-	end)
-end
-
--- spawn npcs in ring
-local NPC_NAMES = { "Bob", "Steve", "Dave", "Jim", "Max" }
-task.spawn(function()
-	task.wait(1.5)
-	local template = ServerStorage:FindFirstChild("NPCRig")
-	if not template then return end
-
-	for i = 1, NPC_COUNT do
-		local angle = (i / NPC_COUNT) * math.pi * 2
-		local radius = math.random(15, 30)
-		local pos = Vector3.new(math.cos(angle) * radius, 4, math.sin(angle) * radius)
-
-		local model = template:Clone()
-		model.Name = "NPC_" .. (NPC_NAMES[i] or ("Guy" .. i))
-		local anim = model:FindFirstChild("Animate"); if anim then anim:Destroy() end
-
-		local hrp = model:FindFirstChild("HumanoidRootPart") :: BasePart
-		if hrp then hrp.CFrame = CFrame.new(pos) end
-		model.Parent = workspace
-		task.delay(0.5, function() startWander(model) end)
-		task.wait(0.2)
-	end
-end)
-
-Players.PlayerRemoving:Connect(function(player: Player)
-	local state = grabState[player]
-	if state then
-		cleanupGrab(state, 0)
-		grabState[player] = nil
-	end
-end)
-
--- victim escape listener
-rGrabEscape.OnServerEvent:Connect(function(escaper: Player)
-	local grabberFound: Player? = nil
-	local stateFound: any = nil
-
-	for grabber, state in pairs(grabState) do
-		if state.victimPlayer == escaper then
-			grabberFound = grabber
-			stateFound = state
-			break
-		end
-	end
-
-	if not grabberFound or not stateFound then return end
-
-	local elapsed = tick() - (stateFound.grabStartTime or 0)
-	if elapsed < GRAB_ESCAPE_TIME then return end
-
-	local victimChar = escaper.Character
-	if victimChar then task.spawn(function() unragdoll(victimChar) end) end
-
-	cleanupGrab(stateFound, 0)
-	grabState[grabberFound] = nil
-	pcall(function() rGrabCancel:FireClient(grabberFound) end)
-end)
-
--- coin economy & datastore
-local DataStore = DataStoreService:GetDataStore("FlingGameData_v3")
-local playerData: {[Player]: any} = {}
-
-local function loadData(player: Player)
-	local key = "player_" .. player.UserId
-	local success, result = pcall(function() return DataStore:GetAsync(key) end)
-	local data
-	if success then
-		data = { coins = (result and result.coins) or 0, ownedItems = (result and result.ownedItems) or { WoodenPlank = true } }
-		data.ownedItems["WoodenPlank"] = true
-	else
-		data = { coins = 0, ownedItems = { WoodenPlank = true }, _loadFailed = true }
-	end
-	playerData[player] = data
-end
-
-local function saveData(player: Player)
-	local data = playerData[player]
-	if not data or data._loadFailed then return end
-	local key = "player_" .. player.UserId
-	pcall(function()
-		DataStore:UpdateAsync(key, function()
-			return { coins = data.coins, ownedItems = data.ownedItems }
-		end)
-	end)
-end
-
-local CoinsAPI = {}
-function CoinsAPI.addCoins(player: Player, amount: number)
+rPurchase.OnServerEvent:Connect(function(player: Player, itemId: string)
 	local data = playerData[player]; if not data then return end
-	data.coins = data.coins + amount
-	rUpdateCoins:FireClient(player, data.coins)
-end
 
-local coinsBindable = Instance.new("BindableFunction")
-coinsBindable.Name = "CoinsAPI"
-coinsBindable.Parent = ServerScriptService
-coinsBindable.OnInvoke = function(action: string, player: Player, amount: number)
-	if action == "addCoins" then CoinsAPI.addCoins(player, amount); return true
-	elseif action == "getCoins" then return (playerData[player] and playerData[player].coins) or 0 end
-	return nil
-end
+	local itemConfig = nil
+	for _, cfg in ipairs(CFG.SHOP_ITEMS) do
+		if cfg.id == itemId then itemConfig = cfg; break end
+	end
+	if not itemConfig or itemConfig.isStarter then return end
+
+	if data.ownedItems[itemId] then
+		spawnItemForPlayer(player, itemId)
+		return
+	end
+
+	if data.coins < itemConfig.price then
+		rUpdateCoins:FireClient(player, data.coins)
+		return
+	end
+
+	data.coins = data.coins - itemConfig.price
+	data.ownedItems[itemId] = true
+	rUpdateCoins:FireClient(player, data.coins)
+	spawnItemForPlayer(player, itemId)
+	task.spawn(saveData, player)
+end)
 
 Players.PlayerAdded:Connect(function(player: Player)
 	loadData(player)
-	player.CharacterAdded:Connect(function()
+	player.CharacterAdded:Connect(function(char)
 		task.wait(1)
-		local d = playerData[player]
-		if d then rUpdateCoins:FireClient(player, d.coins) end
+		local data = playerData[player]; if not data then return end
+		rUpdateCoins:FireClient(player, data.coins)
+
+		local existingPlank = workspace:FindFirstChild("WoodenPlank")
+		if existingPlank then
+			rSpawnItem:FireClient(player, "WoodenPlank", existingPlank)
+		else
+			local plank = Instance.new("Part")
+			plank.Name = "WoodenPlank"
+			plank.Size = Vector3.new(8, 0.5, 2)
+			plank.Material = Enum.Material.Wood
+			plank.Color = Color3.fromRGB(163, 120, 63)
+			plank.Anchored = false
+			local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart
+			plank.CFrame = hrp and (hrp.CFrame * CFrame.new(0, 2, -6)) or CFrame.new(0, 5, 0)
+			plank:SetAttribute("OwnerId", player.UserId)
+			plank.Parent = workspace
+			playerSpawnedItem[player] = plank
+			rSpawnItem:FireClient(player, "WoodenPlank", plank)
+		end
 	end)
 end)
 
--- reward block listener
+Players.PlayerRemoving:Connect(function(player: Player)
+	saveData(player)
+	local item = playerSpawnedItem[player]
+	if item and item.Parent then item:Destroy() end
+	playerSpawnedItem[player] = nil
+	playerData[player] = nil
+
+	local state = grabState[player]
+	if state then cleanupGrab(state, 0); grabState[player] = nil end
+	for grabber, state2 in pairs(grabState) do
+		if state2.victimPlayer == player then
+			cleanupGrab(state2, 0)
+			grabState[grabber] = nil
+		end
+	end
+end)
+
+-- reward block touch
 task.spawn(function()
-	local rewardPart = workspace:WaitForChild("RewardPart", 10) :: BasePart
+	local rewardPart = workspace:WaitForChild(CFG.REWARD_PART_NAME, 10) :: BasePart
 	if not rewardPart then
 		rewardPart = Instance.new("Part")
-		rewardPart.Name = "RewardPart"
+		rewardPart.Name = CFG.REWARD_PART_NAME
 		rewardPart.Size = Vector3.new(4, 4, 4)
-		rewardPart.Position = Vector3.new(0, 2, 20)
+		rewardPart.Position = Vector3.new(0, 2, 25)
 		rewardPart.Anchored = true
 		rewardPart.Material = Enum.Material.Neon
 		rewardPart.Color = Color3.fromRGB(255, 200, 50)
@@ -595,10 +665,10 @@ task.spawn(function()
 
 		local now = tick()
 		local last = cooldowns[player.UserId] or 0
-		if now - last < 10 then return end
+		if now - last < CFG.REWARD_COOLDOWN then return end
 		cooldowns[player.UserId] = now
 
-		CoinsAPI.addCoins(player, 500)
+		CoinsAPI.addCoins(player, CFG.REWARD_COINS)
 	end)
 end)
 
@@ -607,4 +677,4 @@ game:BindToClose(function()
 	task.wait(2)
 end)
 
-print("[Server] v11 economy & datastore active.")
+print("[Server] v12 complete system ready.")
