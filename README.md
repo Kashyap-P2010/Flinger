@@ -1,4 +1,4 @@
-# AvoneTrial (v12)
+# FLINGER (v12)
 
 full system w cheap simple shop menu, item previews, starter plank & clean code.
 
@@ -9,3 +9,4 @@ full system w cheap simple shop menu, item previews, starter plank & clean code.
 - full physics, ragdoll, escape timer & particles
 
 ps: UI IS STILL SO CHEAP, BUT IDC ABOUT UI NOW ONLY FUNCTIONALITY
+ps: avone trial or flinger?!
