@@ -1,8 +1,8 @@
-# AvoneTrial (v10)
+# AvoneTrial (v11)
 
-player to player grab, escape timer, and red beam visual for other players.
+datastore coins economy, reward block touch part, and top right coin counter.
 
 ## changes
-- victim enters ragdoll and gets a 10s escape countdown bar
-- space breaks free when escape is ready
-- red beams rendered for other players grabbing
+- datastore auto save on leave & shutdown
+- reward block gives 500 coins every 10s
+- simple coin label top right

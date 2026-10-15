@@ -38,6 +38,9 @@ local rGrabNotify = getOrCreateRemote("GrabNotify")
 local rGrabEscape = getOrCreateRemote("GrabEscape")
 local rGrabCancel = getOrCreateRemote("GrabCancel")
 local rGrabBroadcast = getOrCreateRemote("GrabBroadcast")
+local rUpdateCoins = getOrCreateRemote("UpdateCoins")
+local DataStoreService = game:GetService("DataStoreService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local rImpactVFX = getOrCreateRemote("ImpactVFX")
 
 local GRAB_MAX_DIST = 50
@@ -517,4 +520,91 @@ rGrabEscape.OnServerEvent:Connect(function(escaper: Player)
 	pcall(function() rGrabCancel:FireClient(grabberFound) end)
 end)
 
-print("[Server] v10 player grabbing active.")
+-- coin economy & datastore
+local DataStore = DataStoreService:GetDataStore("FlingGameData_v3")
+local playerData: {[Player]: any} = {}
+
+local function loadData(player: Player)
+	local key = "player_" .. player.UserId
+	local success, result = pcall(function() return DataStore:GetAsync(key) end)
+	local data
+	if success then
+		data = { coins = (result and result.coins) or 0, ownedItems = (result and result.ownedItems) or { WoodenPlank = true } }
+		data.ownedItems["WoodenPlank"] = true
+	else
+		data = { coins = 0, ownedItems = { WoodenPlank = true }, _loadFailed = true }
+	end
+	playerData[player] = data
+end
+
+local function saveData(player: Player)
+	local data = playerData[player]
+	if not data or data._loadFailed then return end
+	local key = "player_" .. player.UserId
+	pcall(function()
+		DataStore:UpdateAsync(key, function()
+			return { coins = data.coins, ownedItems = data.ownedItems }
+		end)
+	end)
+end
+
+local CoinsAPI = {}
+function CoinsAPI.addCoins(player: Player, amount: number)
+	local data = playerData[player]; if not data then return end
+	data.coins = data.coins + amount
+	rUpdateCoins:FireClient(player, data.coins)
+end
+
+local coinsBindable = Instance.new("BindableFunction")
+coinsBindable.Name = "CoinsAPI"
+coinsBindable.Parent = ServerScriptService
+coinsBindable.OnInvoke = function(action: string, player: Player, amount: number)
+	if action == "addCoins" then CoinsAPI.addCoins(player, amount); return true
+	elseif action == "getCoins" then return (playerData[player] and playerData[player].coins) or 0 end
+	return nil
+end
+
+Players.PlayerAdded:Connect(function(player: Player)
+	loadData(player)
+	player.CharacterAdded:Connect(function()
+		task.wait(1)
+		local d = playerData[player]
+		if d then rUpdateCoins:FireClient(player, d.coins) end
+	end)
+end)
+
+-- reward block listener
+task.spawn(function()
+	local rewardPart = workspace:WaitForChild("RewardPart", 10) :: BasePart
+	if not rewardPart then
+		rewardPart = Instance.new("Part")
+		rewardPart.Name = "RewardPart"
+		rewardPart.Size = Vector3.new(4, 4, 4)
+		rewardPart.Position = Vector3.new(0, 2, 20)
+		rewardPart.Anchored = true
+		rewardPart.Material = Enum.Material.Neon
+		rewardPart.Color = Color3.fromRGB(255, 200, 50)
+		rewardPart.Parent = workspace
+	end
+
+	local cooldowns: {[number]: number} = {}
+	rewardPart.Touched:Connect(function(hit: BasePart)
+		local char = hit.Parent
+		local player = Players:GetPlayerFromCharacter(char)
+		if not player then return end
+
+		local now = tick()
+		local last = cooldowns[player.UserId] or 0
+		if now - last < 10 then return end
+		cooldowns[player.UserId] = now
+
+		CoinsAPI.addCoins(player, 500)
+	end)
+end)
+
+game:BindToClose(function()
+	for _, p in ipairs(Players:GetPlayers()) do saveData(p) end
+	task.wait(2)
+end)
+
+print("[Server] v11 economy & datastore active.")

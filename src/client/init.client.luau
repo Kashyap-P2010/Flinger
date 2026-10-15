@@ -24,6 +24,7 @@ local rGrabNotify = remotesFolder:WaitForChild("GrabNotify") :: RemoteEvent
 local rGrabEscape = remotesFolder:WaitForChild("GrabEscape") :: RemoteEvent
 local rGrabCancel = remotesFolder:WaitForChild("GrabCancel") :: RemoteEvent
 local rGrabBroadcast = remotesFolder:WaitForChild("GrabBroadcast") :: RemoteEvent
+local rUpdateCoins = remotesFolder:WaitForChild("UpdateCoins") :: RemoteEvent
 
 local GRAB_MAX_DIST = 50
 local GRAB_MIN_DIST = 3
@@ -609,4 +610,26 @@ UIS.InputBegan:Connect(function(input: InputObject, gp: boolean)
 	end
 end)
 
-print("[Client] v10 player grab active.")
+-- cheap coin hud top right
+local coinHUD = Instance.new("Frame")
+coinHUD.Size = UDim2.new(0, 100, 0, 30)
+coinHUD.Position = UDim2.new(1, -112, 0, 12)
+coinHUD.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+coinHUD.BackgroundTransparency = 0.2
+coinHUD.BorderSizePixel = 0
+coinHUD.Parent = screenGui
+Instance.new("UICorner", coinHUD).CornerRadius = UDim.new(0, 6)
+
+local coinLabel = Instance.new("TextLabel", coinHUD)
+coinLabel.Size = UDim2.new(1, 0, 1, 0)
+coinLabel.BackgroundTransparency = 1
+coinLabel.Font = Enum.Font.GothamBold
+coinLabel.TextSize = 14
+coinLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+coinLabel.Text = "🪙 0"
+
+rUpdateCoins.OnClientEvent:Connect(function(coins: number)
+	coinLabel.Text = "🪙 " .. tostring(coins)
+end)
+
+print("[Client] v11 coin hud active.")
