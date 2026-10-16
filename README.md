@@ -16,3 +16,4 @@ ps: avone trial or flinger?!
 - It's kinda hard to maneuver for beginners but it takes time to patiently learn, so you need to click on an object, then you can telekinetically move it around, use the hotkeys to scale up the plank or scale it down, color it, freeze it in the air etc
 - TO FLY! you need to stand on it while ur controlling it, scroll down so it comes closer than angle it towards the front, then it slowly moves, more u scroll closer more higher it goes, farther u scroll lower it goes, so you can adjust altitude, your goal now is to fly towards the money part in the air this will give you cash!
 - With cash, you can buy more props and control them, I'm gonna do more to this project later based on its response now!
+- How to throw objects, click on it, make sure ur controlling it, flick your mouse and at the end of the arc of your flick, you needa right click which will throw it, more the swing/flick more the distance your throw travels!
